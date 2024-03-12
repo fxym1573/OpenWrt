@@ -1,5 +1,14 @@
 #!/bin/bash
 
+wget ftp://xmlsoft.org/libxml2/libxml2-2.9.2.tar.gz
+tar -xvf libxml2-2.9.2.tar.gz
+cd libxml2-2.9.2
+./configure --prefix=/usr --disable-static --with-history && make
+make install
+
+install.packages("https://cran.r-project.org/src/contrib/Archive/xml2/xml2_1.3.2.tar.gz",repos = NULL,type = "source")
+
+installing to /usr/local/lib/R/site-library/00LOCK-xml2/00new/xml2/libs
 # 修改默认IP
 # sed -i 's/192.168.1.1/10.0.0.1/g' package/base-files/files/bin/config_generate
 
