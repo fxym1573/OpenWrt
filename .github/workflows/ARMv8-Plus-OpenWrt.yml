@@ -3,13 +3,19 @@
 # File name: build-openwrt.yml
 # Lisence: MIT
 # Author: P3TERX
-# https://github.com/P3TERX
+# Modified: Fixed toolchain cache
 #===============================================
 
 name: ARMv8 Plus OpenWrt
 
 on:
   workflow_dispatch:
+    inputs:
+      rebuild_toolchain:
+        description: '强制重建工具链'
+        required: false
+        default: 'false'
+        type: boolean
   schedule:
     - cron: 0 20 * * *
 
@@ -30,7 +36,6 @@ env:
 jobs:
   Toolchain:
     runs-on: ubuntu-22.04
-
     outputs:
       OPENWRT_PATH: ${{ steps.clone.outputs.OPENWRT_PATH }}
       VERSION_INFO: ${{ steps.clone.outputs.VERSION_INFO }}
@@ -39,6 +44,7 @@ jobs:
       DEVICE_TARGET: ${{ steps.env.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ steps.env.outputs.DEVICE_SUBTARGET }}
       TOOLCHAIN_IMAGE: ${{ steps.env.outputs.TOOLCHAIN_IMAGE }}
+      TOOLCHAIN_HASH: ${{ steps.hash.outputs.TOOLCHAIN_HASH }}
 
     steps:
     - name: Checkout
@@ -70,10 +76,10 @@ jobs:
     - name: Generate Toolchain Config
       run: |
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+        cd $OPENWRT_PATH
         sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' $OPENWRT_PATH/.config
         echo "CONFIG_ALL=y" >> $OPENWRT_PATH/.config
         echo "CONFIG_ALL_NONSHARED=y" >> $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
         make defconfig > /dev/null 2>&1
         
     - name: Debug Toolchain Configuration
@@ -114,11 +120,29 @@ jobs:
         cd $OPENWRT_PATH
         export CURRENT_HASH=$(git log --pretty=tformat:"%H" -n1 tools toolchain)
         echo "CURRENT_HASH=$CURRENT_HASH" >> $GITHUB_ENV
+        echo "TOOLCHAIN_HASH=$CURRENT_HASH" >> $GITHUB_OUTPUT
         echo "CURRENT_HASH is $CURRENT_HASH"
-        export CACHE_HASH=$(curl -fSsL https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.hash)
-        echo "CACHE_HASH is $CACHE_HASH"
+        
+        # 检查是否需要强制重建
+        if [ "${{ github.event.inputs.rebuild_toolchain }}" == "true" ]; then
+          echo "REBUILD_TOOLCHAIN=true" >> $GITHUB_OUTPUT
+          echo "Force rebuild requested"
+          exit 0
+        fi
+        
+        # 检查缓存的工具链
+        export CACHE_HASH=""
+        if curl -fSsL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.hash" > /tmp/cache_hash 2>/dev/null; then
+          CACHE_HASH=$(cat /tmp/cache_hash)
+          echo "CACHE_HASH is $CACHE_HASH"
+        else
+          echo "No cached toolchain found"
+        fi
+        
         if [ -z "$CACHE_HASH" ] || [ "$CURRENT_HASH" != "$CACHE_HASH" ]; then
           echo "REBUILD_TOOLCHAIN=true" >> $GITHUB_OUTPUT
+        else
+          echo "REBUILD_TOOLCHAIN=false" >> $GITHUB_OUTPUT
         fi
 
     - name: Install Feeds
@@ -142,17 +166,65 @@ jobs:
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile"
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-        rm -rf .config* dl bin
+
+    - name: Prepare for Toolchain Image
+      if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
+      run: |
+        cd $OPENWRT_PATH
+        # 清理编译临时文件，但保留工具链
+        rm -rf .config* dl logs tmp 2>/dev/null || true
+        # 清理 feeds 缓存但保留工具链
+        rm -rf feeds/*/.git 2>/dev/null || true
+        # 清理 .o 文件但保留可执行文件
+        find staging_dir -name "*.o" -delete 2>/dev/null || true
+        find build_dir -name "*.o" -delete 2>/dev/null || true
 
     - name: Generate Toolchain Image
       if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
       run: |
         cd workspace
-        mksquashfs openwrt $TOOLCHAIN_IMAGE -force-gid 1001 -force-uid 1001 -comp zstd
+        if [ ! -d "openwrt" ]; then
+          echo "Error: openwrt directory not found!"
+          exit 1
+        fi
+        
+        # 确保目录权限正确
+        sudo chown -R 1001:1001 openwrt
+        
+        echo "Creating squashfs image..."
+        sudo mksquashfs openwrt $TOOLCHAIN_IMAGE \
+          -force-gid 1001 \
+          -force-uid 1001 \
+          -comp zstd \
+          -b 1M \
+          -noappend
+        
         mkdir -p $GITHUB_WORKSPACE/output
-        split -d -b 1900M $TOOLCHAIN_IMAGE $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.img.
-        rm $TOOLCHAIN_IMAGE
-        echo $CURRENT_HASH > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.hash
+        
+        # 分割文件（如果大于 1900MB）
+        IMAGE_SIZE=$(stat -c%s "$TOOLCHAIN_IMAGE" 2>/dev/null || echo 0)
+        if [ $IMAGE_SIZE -gt 1900000000 ]; then
+          echo "Image size ${IMAGE_SIZE} bytes, splitting..."
+          split -d -b 1900M $TOOLCHAIN_IMAGE $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.img.
+        else
+          echo "Image size ${IMAGE_SIZE} bytes, copying as single file..."
+          cp $TOOLCHAIN_IMAGE $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.img
+        fi
+        
+        rm -f $TOOLCHAIN_IMAGE
+        
+        # 保存哈希值
+        echo "$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.hash
+        
+        # 保存元数据
+        cat > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info << EOF
+TOOLCHAIN_HASH=$CURRENT_HASH
+BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+SOURCE_HASH=$(cd openwrt && git rev-parse HEAD)
+IMAGE_SIZE_BYTES=$IMAGE_SIZE
+EOF
+        
+        echo "Toolchain image created successfully"
         ls -lh $GITHUB_WORKSPACE/output
 
     - name: Delete Old Toolchain Assets
@@ -174,11 +246,18 @@ jobs:
         tag: ${{ env.TOOLCHAIN_TAG }}
         token: ${{ secrets.GITHUB_TOKEN }}
         artifacts: output/*
-        body: OpenWrt 工具链镜像文件
+        body: |
+          OpenWrt 工具链镜像文件
+          
+          **工具链信息：**
+          - 目标平台: ${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+          - 源码哈希: ${{ env.CURRENT_HASH }}
+          - 编译时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
   Build:
     needs: [Toolchain]
     runs-on: ubuntu-22.04
+    if: always()
 
     env:
       OPENWRT_PATH: ${{ needs.Toolchain.outputs.OPENWRT_PATH }}
@@ -188,6 +267,7 @@ jobs:
       DEVICE_TARGET: ${{ needs.Toolchain.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ needs.Toolchain.outputs.DEVICE_SUBTARGET }}
       TOOLCHAIN_IMAGE: ${{ needs.Toolchain.outputs.TOOLCHAIN_IMAGE }}
+      TOOLCHAIN_HASH: ${{ needs.Toolchain.outputs.TOOLCHAIN_HASH }}
 
     steps:
     - name: Check Server Performance
@@ -202,7 +282,7 @@ jobs:
         echo "已安装内存详细信息："
         echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
         echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+        echo "硬盘数量：$(ls /dev/sd* 2>/dev/null | grep -v [1-9] | wc -l)" && df -hT
 
     - name: Initialization Environment
       env:
@@ -210,7 +290,7 @@ jobs:
       run: |
         docker images -q | xargs -r docker rmi 2>/dev/null || true
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
-        sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox* google* dotnet* powershell* openjdk* mysql* php* mongodb* moby* snap* aspnetcore*
+        sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox* google* dotnet* powershell* openjdk* mysql* php* mongodb* moby* snap* aspnetcore* 2>/dev/null || true
         sudo -E apt-get -qq update
         sudo -E apt-get -y install libfuse-dev $(curl -fsSL is.gd/depends_ubuntu_2204)
         sudo -E apt-get -qq autoremove --purge
@@ -219,50 +299,115 @@ jobs:
 
     - name: Combine Disks
       run: |
-        sudo swapoff -a && sudo rm -f /mnt/swapfile
+        sudo swapoff -a && sudo rm -f /mnt/swapfile 2>/dev/null || true
         export ROOT_FREE_KB=$(df --block-size=1024 --output=avail / | tail -1)
-        export ROOT_LOOP_KB=$(expr $ROOT_FREE_KB - 1048576)
-        export ROOT_LOOP_BYTES=$(expr $ROOT_LOOP_KB \* 1024)
-        sudo fallocate -l $ROOT_LOOP_BYTES /root.img
-        export ROOT_LOOP_DEVNAME=$(sudo losetup -Pf --show /root.img)
-        sudo pvcreate -f $ROOT_LOOP_DEVNAME
-        export MNT_FREE_KB=$(df --block-size=1024 --output=avail /mnt | tail -1)
-        export MNT_LOOP_KB=$(expr $MNT_FREE_KB - 102400)
-        export MNT_LOOP_BYTES=$(expr $MNT_LOOP_KB \* 1024)
-        sudo fallocate -l $MNT_LOOP_BYTES /mnt/mnt.img
-        export MNT_LOOP_DEVNAME=$(sudo losetup -Pf --show /mnt/mnt.img)
-        sudo pvcreate -f $MNT_LOOP_DEVNAME
-        sudo vgcreate vgstorage $ROOT_LOOP_DEVNAME $MNT_LOOP_DEVNAME
-        sudo lvcreate -n lvstorage -l 100%FREE vgstorage
-        export LV_DEVNAME=$(sudo lvscan | awk -F "'" '{print $2}')
-        sudo mkfs.btrfs -L combinedisk $LV_DEVNAME
-        sudo mount -o compress=zstd $LV_DEVNAME $GITHUB_WORKSPACE
-        sudo chown -R runner:runner $GITHUB_WORKSPACE
-        mkdir $GITHUB_WORKSPACE/tmp && chmod 777 $GITHUB_WORKSPACE/tmp
-        sudo cp -rp /tmp/* $GITHUB_WORKSPACE/tmp
-        sudo mount -B $GITHUB_WORKSPACE/tmp /tmp && df -hT
+        export ROOT_LOOP_KB=$(expr $ROOT_FREE_KB - 1048576 2>/dev/null || echo 1048576)
+        export ROOT_LOOP_BYTES=$(expr $ROOT_LOOP_KB \* 1024 2>/dev/null || echo 1073741824)
+        sudo fallocate -l $ROOT_LOOP_BYTES /root.img 2>/dev/null || true
+        export ROOT_LOOP_DEVNAME=$(sudo losetup -Pf --show /root.img 2>/dev/null || echo "")
+        if [ -n "$ROOT_LOOP_DEVNAME" ]; then
+          sudo pvcreate -f $ROOT_LOOP_DEVNAME 2>/dev/null || true
+          export MNT_FREE_KB=$(df --block-size=1024 --output=avail /mnt | tail -1)
+          export MNT_LOOP_KB=$(expr $MNT_FREE_KB - 102400 2>/dev/null || echo 102400)
+          export MNT_LOOP_BYTES=$(expr $MNT_LOOP_KB \* 1024 2>/dev/null || echo 104857600)
+          sudo fallocate -l $MNT_LOOP_BYTES /mnt/mnt.img 2>/dev/null || true
+          export MNT_LOOP_DEVNAME=$(sudo losetup -Pf --show /mnt/mnt.img 2>/dev/null || echo "")
+          if [ -n "$MNT_LOOP_DEVNAME" ]; then
+            sudo pvcreate -f $MNT_LOOP_DEVNAME 2>/dev/null || true
+            sudo vgcreate vgstorage $ROOT_LOOP_DEVNAME $MNT_LOOP_DEVNAME 2>/dev/null || true
+            sudo lvcreate -n lvstorage -l 100%FREE vgstorage 2>/dev/null || true
+            export LV_DEVNAME=$(sudo lvscan 2>/dev/null | awk -F "'" '{print $2}' | head -1)
+            if [ -n "$LV_DEVNAME" ]; then
+              sudo mkfs.btrfs -L combinedisk -f $LV_DEVNAME 2>/dev/null || true
+              sudo mount -o compress=zstd $LV_DEVNAME $GITHUB_WORKSPACE 2>/dev/null || true
+              sudo chown -R runner:runner $GITHUB_WORKSPACE 2>/dev/null || true
+              mkdir -p $GITHUB_WORKSPACE/tmp && chmod 777 $GITHUB_WORKSPACE/tmp
+              sudo cp -rp /tmp/* $GITHUB_WORKSPACE/tmp 2>/dev/null || true
+              sudo mount -B $GITHUB_WORKSPACE/tmp /tmp 2>/dev/null || true
+            fi
+          fi
+        fi
+        df -hT
 
     - name: Checkout
       run: |
         cd $GITHUB_WORKSPACE
         git init
         git remote add origin https://github.com/$GITHUB_REPOSITORY
-        git fetch
-        git checkout -t origin/$CURRENT_BRANCH
+        git fetch --depth=1
+        git checkout -t origin/$CURRENT_BRANCH 2>/dev/null || git checkout -t origin/main
 
     - name: Prepare Toolchain Image
+      id: prepare_toolchain
       run: |
         mkdir -p workspace
         cd workspace
-        for i in {0..9}
-        do
-          curl -fsL https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.img.0$i >> $TOOLCHAIN_IMAGE.img || break
+        
+        # 尝试下载工具链
+        DOWNLOAD_SUCCESS=false
+        
+        # 检查是否需要跳过工具链下载（强制重建时）
+        if [ "${{ github.event.inputs.rebuild_toolchain }}" == "true" ]; then
+          echo "Force rebuild requested, skipping toolchain download"
+          echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        echo "Downloading toolchain: $TOOLCHAIN_IMAGE"
+        
+        # 尝试下载分割文件
+        for i in $(seq -w 0 9); do
+          if curl -fsL -o ${TOOLCHAIN_IMAGE}.img.$i \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.img.$i" 2>/dev/null; then
+            DOWNLOAD_SUCCESS=true
+          else
+            break
+          fi
         done
-        mkdir openwrt-ro openwrt workdir overlay
-        sudo mount -o loop $TOOLCHAIN_IMAGE.img openwrt-ro
-        sudo mount -t overlay overlay -o lowerdir=openwrt-ro,upperdir=overlay,workdir=workdir openwrt
-        cd $OPENWRT_PATH
-        git pull
+        
+        # 尝试下载单文件
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          if curl -fsL -o $TOOLCHAIN_IMAGE.img \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.img" 2>/dev/null; then
+            DOWNLOAD_SUCCESS=true
+          fi
+        fi
+        
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          echo "No cached toolchain found, will compile from scratch"
+          echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # 合并分割文件
+        if [ -f ${TOOLCHAIN_IMAGE}.img.00 ]; then
+          cat ${TOOLCHAIN_IMAGE}.img.* > $TOOLCHAIN_IMAGE.img 2>/dev/null
+        fi
+        
+        # 挂载工具链镜像
+        if [ -f $TOOLCHAIN_IMAGE.img ]; then
+          mkdir -p openwrt-ro openwrt workdir overlay
+          if sudo mount -o loop $TOOLCHAIN_IMAGE.img openwrt-ro 2>/dev/null; then
+            sudo mount -t overlay overlay -o lowerdir=openwrt-ro,upperdir=overlay,workdir=workdir openwrt 2>/dev/null
+            echo "TOOLCHAIN_AVAILABLE=true" >> $GITHUB_ENV
+            echo "Toolchain mounted successfully"
+          else
+            echo "Failed to mount toolchain image"
+            echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
+          fi
+        fi
+
+    - name: Update Source Code
+      run: |
+        if [ -d "$OPENWRT_PATH/.git" ]; then
+          cd $OPENWRT_PATH
+          git pull
+        else
+          echo "OpenWRT source not found, cloning..."
+          mkdir -p $OPENWRT_PATH
+          cd $OPENWRT_PATH
+          git clone $SOURCE_URL -b $SOURCE_BRANCH .
+        fi
 
     - name: Install Feeds
       run: |
@@ -273,13 +418,13 @@ jobs:
     - name: Load Custom Configuration
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $GITHUB_WORKSPACE/scripts/*.sh
-        chmod +x $DIY_SCRIPT
+        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $OPENWRT_PATH/.config
+        chmod +x $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null || true
+        chmod +x $DIY_SCRIPT 2>/dev/null || true
         cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+        [ -f $GITHUB_WORKSPACE/$DIY_SCRIPT ] && $GITHUB_WORKSPACE/$DIY_SCRIPT
+        [ -f $GITHUB_WORKSPACE/scripts/preset-clash-core.sh ] && $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
+        [ -f $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh ] && $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
 
     - name: Download DL Package
       run: |
@@ -304,7 +449,7 @@ jobs:
       run: |
         cd $OPENWRT_PATH
         mkdir -p files/etc/uci-defaults
-        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
+        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings 2>/dev/null || true
         make package/install -j$(nproc) || make package/install -j1 V=s
         make target/install -j$(nproc) || make target/install -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
@@ -334,9 +479,9 @@ jobs:
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
+        tar -zcf Packages.tar.gz packages 2>/dev/null || true
+        rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
     - name: Upload Firmware To Artifact
@@ -365,6 +510,7 @@ jobs:
   Package:
     needs: [Toolchain, Build]
     runs-on: ubuntu-22.04
+    if: always() && needs.Build.result == 'success'
 
     env:
       VERSION_INFO: ${{ needs.Toolchain.outputs.VERSION_INFO }}
@@ -388,9 +534,14 @@ jobs:
       id: download
       run: |
         [ -d openwrt-armvirt ] || mkdir -p openwrt-armvirt
-        curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" | grep -o "$FIRMWARE_TAG.*rootfs.tar.gz" > DOWNLOAD_ARMVIRT
-        wget -q -P openwrt-armvirt https://github.com/$GITHUB_REPOSITORY/releases/download/$(cat DOWNLOAD_ARMVIRT)
-        echo "status=success" >> $GITHUB_OUTPUT
+        curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | \
+          grep -o "$FIRMWARE_TAG.*rootfs.tar.gz" > DOWNLOAD_ARMVIRT
+        if [ -s DOWNLOAD_ARMVIRT ]; then
+          wget -q -P openwrt-armvirt https://github.com/$GITHUB_REPOSITORY/releases/download/$(cat DOWNLOAD_ARMVIRT)
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
 
@@ -428,5 +579,5 @@ jobs:
           安装到 EMMC：系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
           升级 OpenWrt：系统 → 晶晨宝盒 → 手动上传更新 或者 在线下载更新
           常见问题及注意事项请参考恩山F大➦[最新帖](https://www.right.com.cn/forum/thread-4076037-1-1.html)
-          当前使用版本:【编译前的最后一次➦[主源码](https://github.com/coolsnowwolf/lede)更新记录】
+          当前使用版本:【编译前的最后一次[➦主源码](https://github.com/coolsnowwolf/lede)更新记录】
           ${{ env.VERSION_INFO }}
