@@ -443,3 +443,78 @@ jobs:
       uses: mxschmitt/action-tmate@v3
       if: failure() && github.event_name == 'workflow_dispatch'
       timeout-minutes: 30
+      
+Package:
+    needs: [Toolchain, Build]
+    runs-on: ubuntu-22.04
+    if: always() && needs.Build.result == 'success'
+
+    env:
+      VERSION_INFO: ${{ needs.Toolchain.outputs.VERSION_INFO }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization Environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+        sudo -E apt-get -qq update
+        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Download Armvirt Firmware
+      id: download
+      run: |
+        [ -d openwrt-armvirt ] || mkdir -p openwrt-armvirt
+        curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | \
+          grep -o "$FIRMWARE_TAG.*rootfs.tar.gz" > DOWNLOAD_ARMVIRT 2>/dev/null || echo "" > DOWNLOAD_ARMVIRT
+        if [ -s DOWNLOAD_ARMVIRT ]; then
+          wget -q -P openwrt-armvirt https://github.com/$GITHUB_REPOSITORY/releases/download/$(cat DOWNLOAD_ARMVIRT)
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
+
+    - name: Package OpenWrt Firmware
+      if: steps.download.outputs.status == 'success'
+      uses: unifreq/openwrt_packit@master
+      env:
+        OPENWRT_ARMVIRT: openwrt-armvirt/*rootfs.tar.gz
+        PACKAGE_SOC: l1pro_qemu
+        WHOAMI: Fxym
+        KERNEL_VERSION_NAME: 5.15.13_6.1.5
+        KERNEL_AUTO_LATEST: true
+        DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
+
+    - name: Upload OpenWrt To Artifact
+      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
+      uses: kittaakos/upload-artifact-as-is@master
+      with:
+        path: ${{ env.PACKAGED_OUTPUTPATH }}
+
+    - name: Upload OpenWrt To Release
+      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: R${{ env.DATE }} for ${{ env.OPENWRT_TAG }}
+        allowUpdates: true
+        removeArtifacts: true
+        tag: ${{ env.OPENWRT_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+        body: |
+          **This is OpenWrt Firmware for Armvirt 64**
+          * 这是 ARMv8 多功能版，集成插件多适合折腾
+          默认 IP：192.168.0.254 默认密码：password
+          安装到 EMMC：系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
+          升级 OpenWrt：系统 → 晶晨宝盒 → 手动上传更新 或者 在线下载更新
+          常见问题及注意事项请参考恩山F大➦[最新帖](https://www.right.com.cn/forum/thread-4076037-1-1.html)
+          当前使用版本:【编译前的最后一次[➦主源码](https://github.com/coolsnowwolf/lede)更新记录】
+          ${{ env.VERSION_INFO }}
