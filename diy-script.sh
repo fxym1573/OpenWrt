@@ -104,8 +104,8 @@ git clone --depth=1 https://github.com/pymumu/openwrt-smartdns package/smartdns
 # svn export https://github.com/sbwml/luci-app-mosdns/trunk/mosdns package/mosdns
 
 # DDNS.to
-svn export https://github.com/linkease/nas-packages-luci/trunk/luci/luci-app-ddnsto package/luci-app-ddnsto
-svn export https://github.com/linkease/nas-packages/trunk/network/services/ddnsto package/ddnsto
+svn export https://github.com/linkease/nas-packages-luci/tree/main/luci/luci-app-ddnsto package/luci-app-ddnsto
+svn export https://github.com/linkease/nas-packages/tree/master/network/services/ddnsto package/ddnsto
 
 # Alist
 svn export https://github.com/sbwml/luci-app-alist/trunk/luci-app-alist package/luci-app-alist
