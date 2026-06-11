@@ -195,7 +195,7 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        docker rmi $(docker images -q)
+        docker images -q | xargs -r docker rmi 2>/dev/null || true
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
         sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox* google* dotnet* powershell* openjdk* mysql* php* mongodb* moby* snap* aspnetcore*
         sudo -E apt-get -qq update
@@ -306,7 +306,7 @@ jobs:
         echo -e "\n"
         df -hT
         echo -e "\n"
-        sudo btrfs filesystem usage $GITHUB_WORKSPACE
+        sudo btrfs filesystem show | grep -q combinedisk && sudo btrfs filesystem usage $GITHUB_WORKSPACE || echo "Btrfs filesystem check skipped"
 
     - name: Upload Bin Directory
       if: steps.generate.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
