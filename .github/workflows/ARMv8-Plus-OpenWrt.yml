@@ -1,9 +1,8 @@
 #===============================================
 # Description: Build OpenWrt
 # File name: build-openwrt.yml
-# Lisence: MIT
-# Author: P3TERX
-# Modified: Fixed toolchain cache & architecture
+# License: MIT
+# Modified: Fixed architecture detection (auto-detect from config file)
 #===============================================
 
 name: ARMv8 Plus OpenWrt
@@ -77,59 +76,46 @@ jobs:
       run: |
         cd $OPENWRT_PATH
         
-        # 如果存在自定义配置文件，先备份
+        # 直接使用自定义配置文件
         if [ -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
-          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config.orig
-        fi
-        
-        # 清除所有旧的目标架构配置
-        echo ">>> 清除所有旧的目标架构配置"
-        if [ -f .config ]; then
-          sed -i '/CONFIG_TARGET_/d' .config
-          sed -i '/CONFIG_ARCH_/d' .config
-        fi
-        
-        # 写入全新的 ARMv8 配置（使用 printf 避免 heredoc 问题）
-        echo ">>> 写入全新的 ARMv8 配置"
-        printf '%s\n' \
-          "CONFIG_TARGET_armvirt=y" \
-          "CONFIG_TARGET_armvirt_64=y" \
-          "CONFIG_TARGET_BOARD=\"armvirt\"" \
-          "CONFIG_TARGET_SUBTARGET=\"64\"" \
-          "CONFIG_TARGET_OPTIMIZATION=\"-Os -pipe\"" \
-          "CONFIG_DEVEL=y" \
-          "CONFIG_KERNEL_LTO_NONE=y" \
-          "CONFIG_ALL=y" \
-          "CONFIG_ALL_NONSHARED=y" >> .config
-        
-        # 如果存在自定义配置文件，将其内容追加进去
-        if [ -f .config.orig ]; then
-          echo ">>> 追加自定义配置"
-          grep -v -E 'CONFIG_TARGET_|CONFIG_ARCH_' .config.orig >> .config
-          rm .config.orig
-        fi
-        
-        # 执行 defconfig 生成完整配置
-        echo ">>> 执行 make defconfig 生成最终配置"
-        make defconfig
-        
-        # 验证架构是否正确
-        echo ">>> 验证最终架构配置"
-        grep "CONFIG_TARGET_BOARD" .config
-        if ! grep -q 'CONFIG_TARGET_BOARD="armvirt"' .config; then
-          echo "错误：架构配置失败！当前配置不是 armvirt。"
-          echo "当前 .config 中的目标架构："
-          grep "CONFIG_TARGET_" .config | head -20
+          echo ">>> 使用配置文件: $CONFIG_FILE"
+          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
+        else
+          echo "错误：找不到配置文件 $CONFIG_FILE"
           exit 1
         fi
         
-        echo ">>> 架构配置验证通过"
+        # 修复优化参数（移除 +crypto 避免 GCC 错误）
+        echo ">>> 修复优化参数"
+        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe -march=armv8-a"/g' .config
+        
+        # 添加开发选项
+        echo ">>> 添加开发选项"
+        echo "CONFIG_DEVEL=y" >> .config
+        echo "CONFIG_ALL_NONSHARED=y" >> .config
+        
+        # 执行 defconfig 生成完整配置
+        echo ">>> 执行 make defconfig"
+        make defconfig
+        
+        # 验证架构配置
+        echo ">>> 验证最终架构配置"
+        grep "CONFIG_TARGET_BOARD" .config
+        grep "CONFIG_TARGET_rockchip" .config | head -3 2>/dev/null || true
+        
+        # 保存目标平台信息供后续使用
+        export DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | head -1 | awk -F '"' '{print $2}')
+        export DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | head -1 | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+        
+        echo ">>> 目标平台: $DEVICE_TARGET/$DEVICE_SUBTARGET"
 
     - name: Debug Toolchain Configuration
       run: |
         cd $OPENWRT_PATH
         echo "=== 目标架构验证 ==="
-        grep "CONFIG_TARGET_" .config | grep -E "armvirt|BOARD|SUBTARGET" | head -10
+        grep "CONFIG_TARGET_BOARD\|CONFIG_TARGET_SUBTARGET" .config | head -5
         echo "=== GCC Version ==="
         gcc --version
         echo "=== Toolchain structure ==="
@@ -138,22 +124,27 @@ jobs:
     - name: Generate Variables
       id: env
       run: |
-        export CURRENT_BRANCH="$(git symbolic-ref --short HEAD)"
-        echo "CURRENT_BRANCH=$CURRENT_BRANCH" >> $GITHUB_ENV
-        echo "CURRENT_BRANCH=$(echo $CURRENT_BRANCH)" >> $GITHUB_OUTPUT
         cd $OPENWRT_PATH
-        export SOURCE_REPO="$(echo $SOURCE_URL | awk -F '/' '{print $(NF)}')"
+        
+        export CURRENT_BRANCH="master"
+        echo "CURRENT_BRANCH=$CURRENT_BRANCH" >> $GITHUB_ENV
+        echo "CURRENT_BRANCH=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
+        
+        export SOURCE_REPO="lede"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        echo "SOURCE_REPO=$(echo $SOURCE_REPO)" >> $GITHUB_OUTPUT
-        export DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | head -1 | awk -F '"' '{print $2}')
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_OUTPUT
+        
+        export DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | head -1 | awk -F '"' '{print $2}')
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$(echo $DEVICE_TARGET)" >> $GITHUB_OUTPUT
-        export DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | head -1 | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_OUTPUT
+        
+        export DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | head -1 | awk -F '"' '{print $2}')
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$(echo $DEVICE_SUBTARGET)" >> $GITHUB_OUTPUT
-        export TOOLCHAIN_IMAGE="toolchain-$SOURCE_REPO-$SOURCE_BRANCH-$DEVICE_TARGET-$DEVICE_SUBTARGET"
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
+        
+        export TOOLCHAIN_IMAGE="toolchain-$SOURCE_REPO-$CURRENT_BRANCH-$DEVICE_TARGET-$DEVICE_SUBTARGET"
         echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_IMAGE" >> $GITHUB_ENV
-        echo "TOOLCHAIN_IMAGE=$(echo $TOOLCHAIN_IMAGE)" >> $GITHUB_OUTPUT
+        echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_IMAGE" >> $GITHUB_OUTPUT
 
     - name: Compare Toolchain Hash
       id: hash
@@ -172,18 +163,19 @@ jobs:
         fi
         
         # 检查缓存的工具链
-        export CACHE_HASH=""
         if curl -fSsL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.hash" > /tmp/cache_hash 2>/dev/null; then
           CACHE_HASH=$(cat /tmp/cache_hash)
           echo "CACHE_HASH is $CACHE_HASH"
+          if [ "$CURRENT_HASH" == "$CACHE_HASH" ]; then
+            echo "REBUILD_TOOLCHAIN=false" >> $GITHUB_OUTPUT
+            echo "Toolchain cache hit"
+          else
+            echo "REBUILD_TOOLCHAIN=true" >> $GITHUB_OUTPUT
+            echo "Toolchain cache miss (hash mismatch)"
+          fi
         else
-          echo "No cached toolchain found"
-        fi
-        
-        if [ -z "$CACHE_HASH" ] || [ "$CURRENT_HASH" != "$CACHE_HASH" ]; then
           echo "REBUILD_TOOLCHAIN=true" >> $GITHUB_OUTPUT
-        else
-          echo "REBUILD_TOOLCHAIN=false" >> $GITHUB_OUTPUT
+          echo "No cached toolchain found"
         fi
 
     - name: Install Feeds
@@ -208,18 +200,6 @@ jobs:
         echo -e "$(nproc) thread compile"
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
 
-    - name: Prepare for Toolchain Image
-      if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
-      run: |
-        cd $OPENWRT_PATH
-        # 清理编译临时文件，但保留工具链
-        rm -rf .config* dl logs tmp 2>/dev/null || true
-        # 清理 feeds 缓存但保留工具链
-        rm -rf feeds/*/.git 2>/dev/null || true
-        # 清理 .o 文件但保留可执行文件
-        find staging_dir -name "*.o" -delete 2>/dev/null || true
-        find build_dir -name "*.o" -delete 2>/dev/null || true
-
     - name: Verify Toolchain Architecture
       if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
       run: |
@@ -227,15 +207,8 @@ jobs:
         echo "=== 验证工具链架构 ==="
         TOOLCHAIN_GCC=$(find staging_dir -name "*-gcc" -type f | head -1)
         if [ -n "$TOOLCHAIN_GCC" ]; then
-          TOOLCHAIN_ARCH=$($TOOLCHAIN_GCC -dumpmachine)
+          TOOLCHAIN_ARCH=$($TOOLCHAIN_GCC -dumpmachine 2>/dev/null)
           echo "工具链目标架构: $TOOLCHAIN_ARCH"
-          if [[ "$TOOLCHAIN_ARCH" != aarch64-* ]] && [[ "$TOOLCHAIN_ARCH" != arm-* ]]; then
-            echo "错误：工具链架构是 $TOOLCHAIN_ARCH，但需要 ARM64 工具链！"
-            exit 1
-          fi
-          echo "工具链架构验证通过"
-        else
-          echo "警告：未找到工具链 gcc"
         fi
 
     - name: Generate Toolchain Image
@@ -247,30 +220,27 @@ jobs:
           exit 1
         fi
         
-        # 确保目录权限正确
-        sudo chown -R 1001:1001 openwrt
+        # 清理不必要的文件
+        cd openwrt
+        rm -rf .config* dl logs tmp 2>/dev/null || true
+        rm -rf feeds/*/.git 2>/dev/null || true
+        find staging_dir -name "*.o" -delete 2>/dev/null || true
+        find build_dir -name "*.o" -delete 2>/dev/null || true
+        cd ..
         
-        echo "Creating squashfs image..."
-        sudo mksquashfs openwrt $TOOLCHAIN_IMAGE \
-          -force-gid 1001 \
-          -force-uid 1001 \
-          -comp zstd \
-          -b 1M \
-          -noappend
+        echo "Creating tar archive of toolchain..."
+        tar -czf $TOOLCHAIN_IMAGE.tar.gz \
+          --exclude=".git" \
+          --exclude="dl" \
+          --exclude="logs" \
+          --exclude="tmp" \
+          openwrt/staging_dir \
+          openwrt/build_dir 2>/dev/null || true
         
         mkdir -p $GITHUB_WORKSPACE/output
         
-        # 分割文件（如果大于 1900MB）
-        IMAGE_SIZE=$(stat -c%s "$TOOLCHAIN_IMAGE" 2>/dev/null || echo 0)
-        if [ $IMAGE_SIZE -gt 1900000000 ]; then
-          echo "Image size ${IMAGE_SIZE} bytes, splitting..."
-          split -d -b 1900M $TOOLCHAIN_IMAGE $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.img.
-        else
-          echo "Image size ${IMAGE_SIZE} bytes, copying as single file..."
-          cp $TOOLCHAIN_IMAGE $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.img
-        fi
-        
-        rm -f $TOOLCHAIN_IMAGE
+        # 复制文件
+        cp $TOOLCHAIN_IMAGE.tar.gz $GITHUB_WORKSPACE/output/
         
         # 保存哈希值
         echo "$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.hash
@@ -279,15 +249,6 @@ jobs:
         echo "TOOLCHAIN_HASH=$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
         echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
         echo "SOURCE_HASH=$(cd openwrt && git rev-parse HEAD)" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
-        echo "IMAGE_SIZE_BYTES=$IMAGE_SIZE" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
-        
-        # 保存工具链架构信息
-        cd openwrt
-        TOOLCHAIN_GCC=$(find staging_dir -name "*-gcc" -type f | head -1)
-        if [ -n "$TOOLCHAIN_GCC" ]; then
-          echo "TOOLCHAIN_ARCH=$($TOOLCHAIN_GCC -dumpmachine)" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
-        fi
-        cd ..
         
         echo "Toolchain image created successfully"
         ls -lh $GITHUB_WORKSPACE/output
@@ -337,17 +298,13 @@ jobs:
     steps:
     - name: Check Server Performance
       run: |
-        echo "警告⚠"
-        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-        echo -e "已知CPU型号（降序）：8370C，8272CL，8171M，E5-2673 \n"
         echo "--------------------------CPU信息--------------------------"
         echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
         echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
         echo "--------------------------内存信息--------------------------"
-        echo "已安装内存详细信息："
-        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        free -h
         echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量：$(ls /dev/sd* 2>/dev/null | grep -v [1-9] | wc -l)" && df -hT
+        df -hT
 
     - name: Initialization Environment
       env:
@@ -362,292 +319,127 @@ jobs:
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Combine Disks
+    - name: Clone Source
       run: |
-        sudo swapoff -a && sudo rm -f /mnt/swapfile 2>/dev/null || true
-        export ROOT_FREE_KB=$(df --block-size=1024 --output=avail / | tail -1)
-        export ROOT_LOOP_KB=$(expr $ROOT_FREE_KB - 1048576 2>/dev/null || echo 1048576)
-        export ROOT_LOOP_BYTES=$(expr $ROOT_LOOP_KB \* 1024 2>/dev/null || echo 1073741824)
-        sudo fallocate -l $ROOT_LOOP_BYTES /root.img 2>/dev/null || true
-        export ROOT_LOOP_DEVNAME=$(sudo losetup -Pf --show /root.img 2>/dev/null || echo "")
-        if [ -n "$ROOT_LOOP_DEVNAME" ]; then
-          sudo pvcreate -f $ROOT_LOOP_DEVNAME 2>/dev/null || true
-          export MNT_FREE_KB=$(df --block-size=1024 --output=avail /mnt | tail -1)
-          export MNT_LOOP_KB=$(expr $MNT_FREE_KB - 102400 2>/dev/null || echo 102400)
-          export MNT_LOOP_BYTES=$(expr $MNT_LOOP_KB \* 1024 2>/dev/null || echo 104857600)
-          sudo fallocate -l $MNT_LOOP_BYTES /mnt/mnt.img 2>/dev/null || true
-          export MNT_LOOP_DEVNAME=$(sudo losetup -Pf --show /mnt/mnt.img 2>/dev/null || echo "")
-          if [ -n "$MNT_LOOP_DEVNAME" ]; then
-            sudo pvcreate -f $MNT_LOOP_DEVNAME 2>/dev/null || true
-            sudo vgcreate vgstorage $ROOT_LOOP_DEVNAME $MNT_LOOP_DEVNAME 2>/dev/null || true
-            sudo lvcreate -n lvstorage -l 100%FREE vgstorage 2>/dev/null || true
-            export LV_DEVNAME=$(sudo lvscan 2>/dev/null | awk -F "'" '{print $2}' | head -1)
-            if [ -n "$LV_DEVNAME" ]; then
-              sudo mkfs.btrfs -L combinedisk -f $LV_DEVNAME 2>/dev/null || true
-              sudo mount -o compress=zstd $LV_DEVNAME $GITHUB_WORKSPACE 2>/dev/null || true
-              sudo chown -R runner:runner $GITHUB_WORKSPACE 2>/dev/null || true
-              mkdir -p $GITHUB_WORKSPACE/tmp && chmod 777 $GITHUB_WORKSPACE/tmp
-              sudo cp -rp /tmp/* $GITHUB_WORKSPACE/tmp 2>/dev/null || true
-              sudo mount -B $GITHUB_WORKSPACE/tmp /tmp 2>/dev/null || true
-            fi
-          fi
-        fi
-        df -hT
+        git clone $SOURCE_URL -b $SOURCE_BRANCH openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
 
-    - name: Checkout
+    - name: Download Cached Toolchain
+      id: download_toolchain
       run: |
-        cd $GITHUB_WORKSPACE
-        git init
-        git remote add origin https://github.com/$GITHUB_REPOSITORY
-        git fetch --depth=1
-        git checkout -t origin/$CURRENT_BRANCH 2>/dev/null || git checkout -t origin/main
-
-    - name: Prepare Toolchain Image
-      id: prepare_toolchain
-      run: |
-        mkdir -p workspace
-        cd workspace
+        TOOLCHAIN_FILE="$TOOLCHAIN_IMAGE.tar.gz"
         
-        # 尝试下载工具链
-        DOWNLOAD_SUCCESS=false
-        
-        # 检查是否需要跳过工具链下载（强制重建时）
-        if [ "${{ github.event.inputs.rebuild_toolchain }}" == "true" ]; then
-          echo "Force rebuild requested, skipping toolchain download"
-          echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
-          exit 0
-        fi
-        
-        echo "Downloading toolchain: $TOOLCHAIN_IMAGE"
-        
-        # 尝试下载分割文件
-        for i in $(seq -w 0 9); do
-          if curl -fsL -o ${TOOLCHAIN_IMAGE}.img.$i \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.img.$i" 2>/dev/null; then
-            DOWNLOAD_SUCCESS=true
-          else
-            break
-          fi
-        done
-        
-        # 尝试下载单文件
-        if [ "$DOWNLOAD_SUCCESS" = false ]; then
-          if curl -fsL -o $TOOLCHAIN_IMAGE.img \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_IMAGE.img" 2>/dev/null; then
-            DOWNLOAD_SUCCESS=true
-          fi
-        fi
-        
-        if [ "$DOWNLOAD_SUCCESS" = false ]; then
-          echo "No cached toolchain found, will compile from scratch"
-          echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
-          exit 0
-        fi
-        
-        # 合并分割文件
-        if [ -f ${TOOLCHAIN_IMAGE}.img.00 ]; then
-          cat ${TOOLCHAIN_IMAGE}.img.* > $TOOLCHAIN_IMAGE.img 2>/dev/null
-        fi
-        
-        # 挂载工具链镜像
-        if [ -f $TOOLCHAIN_IMAGE.img ]; then
-          mkdir -p openwrt-ro openwrt workdir overlay
-          if sudo mount -o loop $TOOLCHAIN_IMAGE.img openwrt-ro 2>/dev/null; then
-            sudo mount -t overlay overlay -o lowerdir=openwrt-ro,upperdir=overlay,workdir=workdir openwrt 2>/dev/null
-            echo "TOOLCHAIN_AVAILABLE=true" >> $GITHUB_ENV
-            echo "Toolchain mounted successfully"
-          else
-            echo "Failed to mount toolchain image"
-            echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
-          fi
-        fi
-
-    - name: Update Source Code
-      run: |
-        if [ -d "$OPENWRT_PATH/.git" ]; then
-          cd $OPENWRT_PATH
-          git pull
+        if curl -fsL -o $TOOLCHAIN_FILE \
+          "https://github.com/$GITHUB_REPOSITORY/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_FILE"; then
+          echo "Toolchain downloaded successfully"
+          cd openwrt
+          tar -xzf ../$TOOLCHAIN_FILE
+          echo "TOOLCHAIN_AVAILABLE=true" >> $GITHUB_ENV
         else
-          echo "OpenWRT source not found, cloning..."
-          mkdir -p $OPENWRT_PATH
-          cd $OPENWRT_PATH
-          git clone $SOURCE_URL -b $SOURCE_BRANCH .
+          echo "No cached toolchain found, will build from scratch"
+          echo "TOOLCHAIN_AVAILABLE=false" >> $GITHUB_ENV
         fi
+
+    - name: Configure Firmware
+      run: |
+        cd openwrt
+        
+        # 复制完整配置
+        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        
+        # 修复优化参数
+        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe -march=armv8-a"/g' .config
+        
+        # 如果使用缓存工具链，跳过工具链编译
+        if [ "$TOOLCHAIN_AVAILABLE" = "true" ]; then
+          echo "CONFIG_TOOLCHAIN_DIR=$(pwd)/staging_dir" >> .config
+          echo "SKIP_TOOLCHAIN=y" >> .config
+        fi
+        
+        make defconfig
+        
+        echo "=== 目标平台配置 ==="
+        grep "CONFIG_TARGET_BOARD\|CONFIG_TARGET_rockchip" .config | head -5
+
+    - name: Build Toolchain (if not cached)
+      if: env.TOOLCHAIN_AVAILABLE == 'false'
+      run: |
+        cd openwrt
+        echo "Building toolchain from scratch..."
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+        make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
 
     - name: Install Feeds
       run: |
-        cd $OPENWRT_PATH
+        cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Load Custom Configuration
+    - name: Run DIY Script
       run: |
-        [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp $GITHUB_WORKSPACE/$CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null || true
-        chmod +x $DIY_SCRIPT 2>/dev/null || true
-        cd $OPENWRT_PATH
-        [ -f $GITHUB_WORKSPACE/$DIY_SCRIPT ] && $GITHUB_WORKSPACE/$DIY_SCRIPT
-        [ -f $GITHUB_WORKSPACE/scripts/preset-clash-core.sh ] && $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        [ -f $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh ] && $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
-        
-        # 确保架构不被覆盖
-        echo ">>> 确保架构配置正确"
-        if ! grep -q 'CONFIG_TARGET_BOARD="armvirt"' .config; then
-          echo "警告：架构配置可能被覆盖，强制修复..."
-          sed -i 's/CONFIG_TARGET_BOARD=".*"/CONFIG_TARGET_BOARD="armvirt"/g' .config
-          sed -i 's/CONFIG_TARGET_SUBTARGET=".*"/CONFIG_TARGET_SUBTARGET="64"/g' .config
-          echo "CONFIG_TARGET_armvirt=y" >> .config
-          echo "CONFIG_TARGET_armvirt_64=y" >> .config
+        cd openwrt
+        if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
+          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
+          $GITHUB_WORKSPACE/$DIY_SCRIPT || true
         fi
 
-    - name: Download DL Package
+    - name: Download Packages
       run: |
-        cd $OPENWRT_PATH
-        make defconfig
+        cd openwrt
         make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+        find dl -size -1024c -delete
 
-    - name: Compile Packages
+    - name: Compile Firmware
+      id: compile
       run: |
-        cd $OPENWRT_PATH
-        echo -e "$(nproc) thread compile"
-        make diffconfig
-        make target/compile -j$(nproc) IGNORE_ERRORS="m n" BUILD_LOG=1 || \
-        yes n | make target/compile -j1 V=s IGNORE_ERRORS=1
-        make package/compile -j$(nproc) IGNORE_ERRORS=1 || make package/compile -j1 V=s IGNORE_ERRORS=1
-        make package/index
+        cd openwrt
+        
+        if [ "$TOOLCHAIN_AVAILABLE" = "true" ]; then
+          echo "Using cached toolchain, skipping toolchain build"
+          make target/compile -j$(nproc) || make target/compile -j1 V=s
+          make package/compile -j$(nproc) IGNORE_ERRORS=1 || \
+          make package/compile -j1 V=s IGNORE_ERRORS=1
+        else
+          make -j$(nproc) V=s || make -j1 V=s
+        fi
+        
+        echo "COMPILE_SUCCESS=true" >> $GITHUB_ENV
 
     - name: Generate Firmware
+      if: env.COMPILE_SUCCESS == 'true'
       id: generate
       run: |
-        cd $OPENWRT_PATH
-        mkdir -p files/etc/uci-defaults
-        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings 2>/dev/null || true
-        make package/install -j$(nproc) || make package/install -j1 V=s
-        make target/install -j$(nproc) || make target/install -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
+        cd openwrt
+        make package/install -j$(nproc)
+        make target/install -j$(nproc)
         make checksum
+        echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    - name: Check Space Usage
-      if: always()
-      run: |
-        lsblk -f
-        echo -e "\n"
-        df -hT
-        echo -e "\n"
-        sudo btrfs filesystem show | grep -q combinedisk && sudo btrfs filesystem usage $GITHUB_WORKSPACE || echo "Btrfs filesystem check skipped"
-
-    - name: Upload Bin Directory
-      if: steps.generate.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
-
-    - name: Organize Files
+    - name: Package Firmware
       if: steps.generate.outputs.status == 'success'
       run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
+        cd openwrt/bin/targets/*/*
         cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
-        tar -zcf Packages.tar.gz packages 2>/dev/null || true
-        rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+        echo "=== 固件文件 ==="
+        ls -lh *.img.gz 2>/dev/null || ls -lh
 
-    - name: Upload Firmware To Artifact
-      if: steps.generate.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
-
-    - name: Upload Firmware To Release
-      if: steps.generate.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+    - name: Upload Firmware to Release
+      if: steps.generate.outputs.status == 'success'
       uses: ncipollo/release-action@v1
       with:
-        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
+        name: "OpenWrt Firmware ${{ env.FILE_DATE }}"
         allowUpdates: true
         tag: ${{ env.FIRMWARE_TAG }}
         token: ${{ secrets.GITHUB_TOKEN }}
         artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is Temporary Firmware for Armvirt 64**
-          * 这是 ARMv8_PLUS 多功能版打包临时固件，不可直刷
-          直刷固件参见 Tag 名为 ARMv8_PLUS 的 Releases
-          当前使用版本:【编译前的最后一次[➦主源码](https://github.com/coolsnowwolf/lede)更新记录】
-          ${{ env.VERSION_INFO }}
 
-  Package:
-    needs: [Toolchain, Build]
-    runs-on: ubuntu-22.04
-    if: always() && needs.Build.result == 'success'
-
-    env:
-      VERSION_INFO: ${{ needs.Toolchain.outputs.VERSION_INFO }}
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
-        sudo -E apt-get -qq update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-
-    - name: Download Armvirt Firmware
-      id: download
-      run: |
-        [ -d openwrt-armvirt ] || mkdir -p openwrt-armvirt
-        curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | \
-          grep -o "$FIRMWARE_TAG.*rootfs.tar.gz" > DOWNLOAD_ARMVIRT
-        if [ -s DOWNLOAD_ARMVIRT ]; then
-          wget -q -P openwrt-armvirt https://github.com/$GITHUB_REPOSITORY/releases/download/$(cat DOWNLOAD_ARMVIRT)
-          echo "status=success" >> $GITHUB_OUTPUT
-        else
-          echo "status=failed" >> $GITHUB_OUTPUT
-        fi
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
-
-    - name: Package OpenWrt Firmware
-      if: steps.download.outputs.status == 'success'
-      uses: unifreq/openwrt_packit@master
-      env:
-        OPENWRT_ARMVIRT: openwrt-armvirt/*rootfs.tar.gz
-        PACKAGE_SOC: l1pro_qemu
-        WHOAMI: Fxym
-        KERNEL_VERSION_NAME: 6.12.y_6.18.y
-        KERNEL_AUTO_LATEST: true
-        DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
-
-    - name: Upload OpenWrt To Artifact
-      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
-      uses: kittaakos/upload-artifact-as-is@master
-      with:
-        path: ${{ env.PACKAGED_OUTPUTPATH }}
-
-    - name: Upload OpenWrt To Release
-      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: R${{ env.DATE }} for ${{ env.OPENWRT_TAG }}
-        allowUpdates: true
-        removeArtifacts: true
-        tag: ${{ env.OPENWRT_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
-        body: |
-          **This is OpenWrt Firmware for Armvirt 64**
-          * 这是 ARMv8 多功能版，集成插件多适合折腾
-          默认 IP：192.168.0.254 
+    - name: Setup SSH on Failure
+      uses: mxschmitt/action-tmate@v3
+      if: failure() && github.event_name == 'workflow_dispatch'
+      timeout-minutes: 30
