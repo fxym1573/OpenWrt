@@ -70,6 +70,7 @@ jobs:
     - name: Generate Toolchain Config
       run: |
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' $OPENWRT_PATH/.config
         echo "CONFIG_ALL=y" >> $OPENWRT_PATH/.config
         echo "CONFIG_ALL_NONSHARED=y" >> $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
