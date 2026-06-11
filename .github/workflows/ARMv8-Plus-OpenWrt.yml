@@ -75,6 +75,7 @@ jobs:
         echo "CONFIG_ALL_NONSHARED=y" >> $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
         make defconfig > /dev/null 2>&1
+        
     - name: Debug Toolchain Configuration
       run: |
         cd $OPENWRT_PATH
@@ -82,8 +83,10 @@ jobs:
         gcc --version
         echo "=== Current .config optimization ==="
         grep CONFIG_TARGET_OPTIMIZATION .config
-        echo "=== Toolchain GCC Makefile ==="
-        cat toolchain/gcc/Makefile | grep -A5 -B5 "with-arch"
+        echo "=== Toolchain structure ==="
+        ls -la toolchain/gcc/ | head -10
+        echo "=== Toolchain Makefile ==="
+        head -20 toolchain/Makefile
 
     - name: Generate Variables
       id: env
