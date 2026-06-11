@@ -74,13 +74,39 @@ jobs:
         echo "VERSION_INFO=$(echo $VERSION_INFO)" >> $GITHUB_OUTPUT
 
     - name: Generate Toolchain Config
-      run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' $OPENWRT_PATH/.config
-        echo "CONFIG_ALL=y" >> $OPENWRT_PATH/.config
-        echo "CONFIG_ALL_NONSHARED=y" >> $OPENWRT_PATH/.config
-        make defconfig > /dev/null 2>&1
+        run: |
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+          cd $OPENWRT_PATH
+
+          # ========== 新增：强制锁定ARMv8架构 ==========
+          echo ">>> 强制锁定目标架构为 ARMv8"
+          # 清除所有可能存在的目标架构配置，防止冲突
+          sed -i '/CONFIG_TARGET_armvirt/d' .config
+          sed -i '/CONFIG_TARGET_BOARD/d' .config
+          sed -i '/CONFIG_TARGET_SUBTARGET/d' .config
+          # 写入正确的ARMv8配置
+          cat >> .config <<-EOF
+          CONFIG_TARGET_armvirt=y
+          CONFIG_TARGET_armvirt_64=y
+          CONFIG_TARGET_BOARD="armvirt"
+          CONFIG_TARGET_SUBTARGET="64"
+          CONFIG_TARGET_OPTIMIZATION="-Os -pipe"
+          CONFIG_DEVEL=y
+          CONFIG_KERNEL_LTO_NONE=y
+          CONFIG_AUDIO_SUPPORT=y
+          CONFIG_GPIO_SUPPORT=y
+          CONFIG_USB_SUPPORT=y
+          CONFIG_RTC_SUPPORT=y
+          EOF
+          # ========== 强制锁定架构结束 ==========
+
+          # 保留你原有的优化设置
+          sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' .config
+          echo "CONFIG_ALL=y" >> .config
+          echo "CONFIG_ALL_NONSHARED=y" >> .config
+
+          # 现在执行非静默的defconfig，以便在日志中查看任何错误
+          make defconfig
         
     - name: Debug Toolchain Configuration
       run: |
