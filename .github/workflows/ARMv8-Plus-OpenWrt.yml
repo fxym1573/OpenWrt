@@ -216,13 +216,11 @@ jobs:
         # 保存哈希值
         echo "$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.hash
         
-        # 保存元数据
-        cat > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info << EOF
-TOOLCHAIN_HASH=$CURRENT_HASH
-BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-SOURCE_HASH=$(cd openwrt && git rev-parse HEAD)
-IMAGE_SIZE_BYTES=$IMAGE_SIZE
-EOF
+        # 保存元数据（使用多个echo命令避免heredoc语法问题）
+        echo "TOOLCHAIN_HASH=$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
+        echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
+        echo "SOURCE_HASH=$(cd openwrt && git rev-parse HEAD)" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
+        echo "IMAGE_SIZE_BYTES=$IMAGE_SIZE" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
         
         echo "Toolchain image created successfully"
         ls -lh $GITHUB_WORKSPACE/output
