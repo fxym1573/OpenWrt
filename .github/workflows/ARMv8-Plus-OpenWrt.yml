@@ -444,7 +444,7 @@ jobs:
       if: failure() && github.event_name == 'workflow_dispatch'
       timeout-minutes: 30
       
-Package:
+  Package:
     needs: [Toolchain, Build]
     runs-on: ubuntu-22.04
     if: always() && needs.Build.result == 'success'
