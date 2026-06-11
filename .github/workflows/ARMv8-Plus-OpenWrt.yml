@@ -3,7 +3,7 @@
 # File name: build-openwrt.yml
 # Lisence: MIT
 # Author: P3TERX
-# Modified: Fixed toolchain cache
+# Modified: Fixed toolchain cache & architecture
 #===============================================
 
 name: ARMv8 Plus OpenWrt
@@ -75,36 +75,57 @@ jobs:
 
     - name: Generate Toolchain Config
       run: |
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
         
-        # 强制锁定ARMv8架构
-        echo ">>> 强制锁定目标架构为 ARMv8"
-        # 清除所有可能存在的目标架构配置，防止冲突
-        sed -i '/CONFIG_TARGET_armvirt/d' .config
-        sed -i '/CONFIG_TARGET_BOARD/d' .config
-        sed -i '/CONFIG_TARGET_SUBTARGET/d' .config
+        # 如果存在自定义配置文件，先备份
+        if [ -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
+          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config.orig
+        fi
         
-        # 使用 echo 逐行追加，避免 heredoc 语法问题
-        echo "CONFIG_TARGET_armvirt=y" >> .config
-        echo "CONFIG_TARGET_armvirt_64=y" >> .config
-        echo "CONFIG_TARGET_BOARD=\"armvirt\"" >> .config
-        echo "CONFIG_TARGET_SUBTARGET=\"64\"" >> .config
-        echo "CONFIG_TARGET_OPTIMIZATION=\"-Os -pipe\"" >> .config
-        echo "CONFIG_DEVEL=y" >> .config
-        echo "CONFIG_KERNEL_LTO_NONE=y" >> .config
-        echo "CONFIG_AUDIO_SUPPORT=y" >> .config
-        echo "CONFIG_GPIO_SUPPORT=y" >> .config
-        echo "CONFIG_USB_SUPPORT=y" >> .config
-        echo "CONFIG_RTC_SUPPORT=y" >> .config
+        # ========== 关键修复：删除所有目标架构相关的旧配置 ==========
+        echo ">>> 清除所有旧的目标架构配置"
+        if [ -f .config ]; then
+          sed -i '/CONFIG_TARGET_/d' .config
+          sed -i '/CONFIG_ARCH_/d' .config
+        fi
         
-        # 保留原有优化设置
-        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' .config
-        echo "CONFIG_ALL=y" >> .config
-        echo "CONFIG_ALL_NONSHARED=y" >> .config
+        # ========== 写入全新的、正确的 ARMv8 配置 ==========
+        echo ">>> 写入全新的 ARMv8 配置"
+        cat > .config << 'EOF'
+CONFIG_TARGET_armvirt=y
+CONFIG_TARGET_armvirt_64=y
+CONFIG_TARGET_BOARD="armvirt"
+CONFIG_TARGET_SUBTARGET="64"
+CONFIG_TARGET_OPTIMIZATION="-Os -pipe"
+CONFIG_DEVEL=y
+CONFIG_KERNEL_LTO_NONE=y
+CONFIG_ALL=y
+CONFIG_ALL_NONSHARED=y
+EOF
         
-        # 执行 defconfig
+        # 如果存在自定义配置文件，将其内容追加进去（但跳过已存在的架构配置）
+        if [ -f .config.orig ]; then
+          echo ">>> 追加自定义配置"
+          # 过滤掉自定义配置中的架构相关行
+          grep -v -E 'CONFIG_TARGET_|CONFIG_ARCH_' .config.orig >> .config
+          rm .config.orig
+        fi
+        
+        # 执行 defconfig 生成完整配置
+        echo ">>> 执行 make defconfig 生成最终配置"
         make defconfig
+        
+        # 验证架构是否正确
+        echo ">>> 验证最终架构配置"
+        grep "CONFIG_TARGET_BOARD" .config
+        if ! grep -q 'CONFIG_TARGET_BOARD="armvirt"' .config; then
+          echo "错误：架构配置失败！当前配置不是 armvirt。"
+          echo "当前 .config 中的目标架构："
+          grep "CONFIG_TARGET_" .config | head -20
+          exit 1
+        fi
+        
+        echo ">>> 架构配置验证通过"
 
     - name: Debug Toolchain Configuration
       run: |
@@ -464,13 +485,23 @@ jobs:
     - name: Load Custom Configuration
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $OPENWRT_PATH/.config
+        [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp $GITHUB_WORKSPACE/$CONFIG_FILE $OPENWRT_PATH/.config
         chmod +x $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null || true
         chmod +x $DIY_SCRIPT 2>/dev/null || true
         cd $OPENWRT_PATH
         [ -f $GITHUB_WORKSPACE/$DIY_SCRIPT ] && $GITHUB_WORKSPACE/$DIY_SCRIPT
         [ -f $GITHUB_WORKSPACE/scripts/preset-clash-core.sh ] && $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
         [ -f $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh ] && $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+        
+        # 确保架构不被覆盖
+        echo ">>> 确保架构配置正确"
+        if ! grep -q 'CONFIG_TARGET_BOARD="armvirt"' .config; then
+          echo "警告：架构配置可能被覆盖，强制修复..."
+          sed -i 's/CONFIG_TARGET_BOARD=".*"/CONFIG_TARGET_BOARD="armvirt"/g' .config
+          sed -i 's/CONFIG_TARGET_SUBTARGET=".*"/CONFIG_TARGET_SUBTARGET="64"/g' .config
+          echo "CONFIG_TARGET_armvirt=y" >> .config
+          echo "CONFIG_TARGET_armvirt_64=y" >> .config
+        fi
 
     - name: Download DL Package
       run: |
@@ -624,6 +655,4 @@ jobs:
           默认 IP：192.168.0.254 默认密码：password
           安装到 EMMC：系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
           升级 OpenWrt：系统 → 晶晨宝盒 → 手动上传更新 或者 在线下载更新
-          常见问题及注意事项请参考恩山F大➦[最新帖](https://www.right.com.cn/forum/thread-4076037-1-1.html)
-          当前使用版本:【编译前的最后一次[➦主源码](https://github.com/coolsnowwolf/lede)更新记录】
-          ${{ env.VERSION_INFO }}
+          常见问题及注意事项请参考恩山F大➦[最新帖](https://
