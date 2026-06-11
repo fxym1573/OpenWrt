@@ -82,31 +82,29 @@ jobs:
           cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config.orig
         fi
         
-        # ========== 关键修复：删除所有目标架构相关的旧配置 ==========
+        # 清除所有旧的目标架构配置
         echo ">>> 清除所有旧的目标架构配置"
         if [ -f .config ]; then
           sed -i '/CONFIG_TARGET_/d' .config
           sed -i '/CONFIG_ARCH_/d' .config
         fi
         
-        # ========== 写入全新的、正确的 ARMv8 配置 ==========
+        # 写入全新的 ARMv8 配置（使用 printf 避免 heredoc 问题）
         echo ">>> 写入全新的 ARMv8 配置"
-        cat > .config << 'EOF'
-CONFIG_TARGET_armvirt=y
-CONFIG_TARGET_armvirt_64=y
-CONFIG_TARGET_BOARD="armvirt"
-CONFIG_TARGET_SUBTARGET="64"
-CONFIG_TARGET_OPTIMIZATION="-Os -pipe"
-CONFIG_DEVEL=y
-CONFIG_KERNEL_LTO_NONE=y
-CONFIG_ALL=y
-CONFIG_ALL_NONSHARED=y
-EOF
+        printf '%s\n' \
+          "CONFIG_TARGET_armvirt=y" \
+          "CONFIG_TARGET_armvirt_64=y" \
+          "CONFIG_TARGET_BOARD=\"armvirt\"" \
+          "CONFIG_TARGET_SUBTARGET=\"64\"" \
+          "CONFIG_TARGET_OPTIMIZATION=\"-Os -pipe\"" \
+          "CONFIG_DEVEL=y" \
+          "CONFIG_KERNEL_LTO_NONE=y" \
+          "CONFIG_ALL=y" \
+          "CONFIG_ALL_NONSHARED=y" >> .config
         
-        # 如果存在自定义配置文件，将其内容追加进去（但跳过已存在的架构配置）
+        # 如果存在自定义配置文件，将其内容追加进去
         if [ -f .config.orig ]; then
           echo ">>> 追加自定义配置"
-          # 过滤掉自定义配置中的架构相关行
           grep -v -E 'CONFIG_TARGET_|CONFIG_ARCH_' .config.orig >> .config
           rm .config.orig
         fi
@@ -652,7 +650,4 @@ EOF
         body: |
           **This is OpenWrt Firmware for Armvirt 64**
           * 这是 ARMv8 多功能版，集成插件多适合折腾
-          默认 IP：192.168.0.254 默认密码：password
-          安装到 EMMC：系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
-          升级 OpenWrt：系统 → 晶晨宝盒 → 手动上传更新 或者 在线下载更新
-          常见问题及注意事项请参考恩山F大➦[最新帖](https://
+          默认 IP：192.168.0.254 
