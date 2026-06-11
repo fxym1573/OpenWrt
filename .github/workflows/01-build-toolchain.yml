@@ -1,0 +1,207 @@
+name: Build and Cache Toolchain (Daily)
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild toolchain'
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # 每天 UTC 00:00 (北京时间 08:00) 自动编译
+    - cron: '0 0 * * *'
+  push:
+    paths:
+      - 'toolchain/**'
+      - 'configs/armv8-plus.config'
+    branches:
+      - main
+
+env:
+  SOURCE_URL: https://github.com/coolsnowwolf/lede
+  SOURCE_BRANCH: master
+  CONFIG_FILE: configs/armv8-plus.config
+  TOOLCHAIN_RELEASE_TAG: toolchain-cache
+  TZ: Asia/Shanghai
+  # 保留最近的天数
+  KEEP_DAYS: 7
+
+jobs:
+  Build-Toolchain:
+    runs-on: ubuntu-22.04
+    # 如果之前的工具链构建还在运行，取消当前的
+    concurrency:
+      group: toolchain-build
+      cancel-in-progress: false
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization Environment
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+        sudo -E apt-get -qq update
+        sudo -E apt-get -y install build-essential clang flex g++ gawk gcc-multilib gettext git libelf-dev libncurses5-dev libssl-dev python3-distutils python3-setuptools rsync swig unzip zlib1g-dev file wget
+        sudo -E apt-get -qq autoremove --purge
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Clone Source
+      id: clone
+      run: |
+        git clone $SOURCE_URL -b $SOURCE_BRANCH openwrt
+        cd openwrt
+        echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+        echo "OPENWRT_COMMIT_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+
+    - name: Generate Toolchain Hash
+      id: hash
+      run: |
+        cd openwrt
+        # 计算工具链相关文件的哈希
+        TOOLCHAIN_HASH=$(find toolchain -type f \( -name "*.mk" -o -name "Makefile" -o -name "Config.in" -o -name "*.version" \) -exec md5sum {} \; | sort -k2 | md5sum | cut -d' ' -f1)
+        # 加入日期，确保每天都有新的工具链
+        DAILY_HASH="${TOOLCHAIN_HASH}_$(date +'%Y%m%d')"
+        echo "TOOLCHAIN_HASH=$TOOLCHAIN_HASH" >> $GITHUB_ENV
+        echo "DAILY_HASH=$DAILY_HASH" >> $GITHUB_ENV
+        echo "TOOLCHAIN_HASH=$TOOLCHAIN_HASH" >> $GITHUB_OUTPUT
+
+    - name: Check Today's Toolchain
+      id: check
+      run: |
+        # 检查今天是否已经构建过
+        TODAY=$(date +'%Y%m%d')
+        if curl -sL "https://github.com/${{ github.repository }}/releases/download/$TOOLCHAIN_RELEASE_TAG/toolchain-${TODAY}.tar.gz" | head -c 10 > /dev/null; then
+          echo "Today's toolchain already exists, skipping build"
+          echo "NEED_BUILD=false" >> $GITHUB_ENV
+        elif [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
+          echo "Force rebuild enabled"
+          echo "NEED_BUILD=true" >> $GITHUB_ENV
+        else
+          echo "Need to build today's toolchain"
+          echo "NEED_BUILD=true" >> $GITHUB_ENV
+        fi
+
+    - name: Configure for Toolchain
+      if: env.NEED_BUILD == 'true'
+      run: |
+        cd openwrt
+        
+        # 复制基础配置
+        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        
+        # 修复优化参数
+        sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe"/g' .config
+        
+        # 配置只编译工具链
+        cat >> .config << 'EOF'
+        CONFIG_TARGET_OPTIMIZATION="-Os -pipe"
+        CONFIG_DEVEL=y
+        CONFIG_ALL_NONSHARED=y
+        EOF
+        
+        make defconfig
+
+    - name: Build Toolchain
+      if: env.NEED_BUILD == 'true'
+      run: |
+        cd openwrt
+        echo "Building toolchain with $(nproc) threads"
+        echo "Build date: $(date)"
+        
+        # 更新 feeds
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        
+        # 编译工具链
+        make tools/compile -j$(nproc) 2>&1 | tee tools.log || make tools/compile -j1 V=s
+        make toolchain/compile -j$(nproc) 2>&1 | tee toolchain.log || make toolchain/compile -j1 V=s
+        
+        # 记录工具链信息
+        if [ -f "staging_dir/host/bin/gcc" ]; then
+          echo "GCC_VERSION=$(staging_dir/host/bin/gcc --version | head -1)" >> $GITHUB_ENV
+        fi
+        if [ -f "staging_dir/host/bin/ld" ]; then
+          echo "BINUTILS_VERSION=$(staging_dir/host/bin/ld --version | head -1)" >> $GITHUB_ENV
+        fi
+
+    - name: Package Toolchain
+      if: env.NEED_BUILD == 'true'
+      run: |
+        cd openwrt
+        
+        TODAY=$(date +'%Y%m%d')
+        
+        # 打包工具链（使用日期作为文件名）
+        tar -czf toolchain-${TODAY}.tar.gz \
+          staging_dir/toolchain-* \
+          staging_dir/host
+        
+        # 同时用哈希保存一份（用于版本追溯）
+        cp toolchain-${TODAY}.tar.gz toolchain-${{ env.TOOLCHAIN_HASH }}.tar.gz
+        
+        # 计算文件大小
+        TOOLCHAIN_SIZE=$(du -h toolchain-${TODAY}.tar.gz | cut -f1)
+        echo "TOOLCHAIN_SIZE=$TOOLCHAIN_SIZE" >> $GITHUB_ENV
+        
+        # 创建版本信息
+        cat > toolchain-info.txt << EOF
+        ====================================
+        Toolchain Build Information
+        ====================================
+        Build Date: $(date '+%Y-%m-%d %H:%M:%S')
+        Date Stamp: ${TODAY}
+        Toolchain Hash: ${{ env.TOOLCHAIN_HASH }}
+        OpenWrt Commit: ${{ env.OPENWRT_COMMIT }}
+        OpenWrt Commit Short: ${{ env.OPENWRT_COMMIT_SHORT }}
+        GCC Version: ${{ env.GCC_VERSION }}
+        Binutils Version: ${{ env.BINUTILS_VERSION }}
+        Target: rockchip/armv8
+        Source URL: ${{ env.SOURCE_URL }}
+        ====================================
+        EOF
+
+    - name: Upload Toolchain to Release
+      if: env.NEED_BUILD == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: "Toolchain Cache ${{ env.BUILD_DATE }}"
+        allowUpdates: true
+        tag: ${{ env.TOOLCHAIN_RELEASE_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: |
+          openwrt/toolchain-*.tar.gz
+          openwrt/toolchain-info.txt
+        body: |
+          ## OpenWrt Toolchain Cache
+          
+          **自动每日构建**
+          
+          | 项目 | 值 |
+          |------|-----|
+          | 构建日期 | ${{ env.BUILD_DATE }} |
+          | 工具链哈希 | `${{ env.TOOLCHAIN_HASH }}` |
+          | 源码提交 | [${{ env.OPENWRT_COMMIT_SHORT }}](${{ env.SOURCE_URL }}/commit/${{ env.OPENWRT_COMMIT }}) |
+          | GCC 版本 | ${{ env.GCC_VERSION }} |
+          | Binutils 版本 | ${{ env.BINUTILS_VERSION }} |
+          | 文件大小 | ${{ env.TOOLCHAIN_SIZE }} |
+          | 目标平台 | rockchip/armv8 |
+          
+          **文件说明:**
+          - `toolchain-YYYYMMDD.tar.gz` - 按日期命名的工具链
+          - `toolchain-{hash}.tar.gz` - 按哈希命名的工具链（用于追溯）
+
+    - name: Clean Old Toolchains
+      if: env.NEED_BUILD == 'true'
+      run: |
+        # 删除 7 天前的旧工具链文件（保留最近 7 天）
+        echo "Cleaning old toolchain files..."
+        # 注意：GitHub Releases 的清理需要单独处理
+
+    - name: Setup SSH on Failure
+      uses: mxschmitt/action-tmate@v3
+      if: failure() && github.event_name == 'workflow_dispatch'
+      timeout-minutes: 30
