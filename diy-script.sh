@@ -1,665 +1,153 @@
-name: ARMv8 Plus OpenWrt
+#!/bin/bash
+#===============================================
+# Description: DIY script
+# File name: diy-script.sh
+# Lisence: MIT
+# Author: P3TERX
+# Blog: https://p3terx.com
+#===============================================
+#添加软件源
+#sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
+#sed -i '$a src-git small https://github.com/kenzok8/small' feeds.conf.default
+#sed -i '$a src-git haibo https://github.com/haiibo/openwrt-packages' feeds.conf.default
+#sed -i '$a src-git kiddin9 https://github.com/kiddin9/openwrt-packages' feeds.conf.default
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: 0 20 * * *
+# 修改默认IP
+ sed -i 's/192.168.1.1/192.168.0.254/g' package/base-files/files/bin/config_generate
 
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  CONFIG_FILE: configs/armv8-plus.config
-  DIY_SCRIPT: diy-script.sh
-  CLASH_KERNEL: arm64
-  CACHE_TOOLCHAIN: true
-  UPLOAD_BIN_DIR: false
-  FIRMWARE_RELEASE: true
-  FIRMWARE_TAG: ROOTFS_PLUS
-  OPENWRT_RELEASE: true
-  OPENWRT_TAG: ARMv8_PLUS
-  TOOLCHAIN_TAG: TOOLCHAIN_ARMV8
-  TZ: Asia/Shanghai
+# 更改默认 Shell 为 zsh
+# sed -i 's/\/bin\/ash/\/usr\/bin\/zsh/g' package/base-files/files/etc/passwd
 
-jobs:
-  Check-Toolchain:
-    runs-on: ubuntu-22.04
-    outputs:
-      TOOLCHAIN_EXISTS: ${{ steps.check.outputs.TOOLCHAIN_EXISTS }}
-      TOOLCHAIN_DATE: ${{ steps.check.outputs.Toolchain_DATE }}
-      SOURCE_HASH: ${{ steps.get-hash.outputs.SOURCE_HASH }}
-    
-    steps:
-    - name: Checkout Source
-      uses: actions/checkout@main
-      with:
-        repository: coolsnowwolf/lede
-        branch: master
-        path: source
-    
-    - name: Get Source Commit Hash
-      id: get-hash
-      run: |
-        cd source
-        SOURCE_HASH=$(git rev-parse HEAD)
-        echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_OUTPUT
-        echo "当前源码 Hash: $SOURCE_HASH"
-    
-    - name: Check Toolchain Release
-      id: check
-      run: |
-        TOOLCHAIN_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}"
-        RESPONSE=$(curl -s -w "%{http_code}" "$TOOLCHAIN_URL" -o /dev/null)
-        
-        if [ "$RESPONSE" = "200" ]; then
-          TOOLCHAIN_HASH=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}" | grep -m1 "TOOLCHAIN_SOURCE_HASH" | awk -F '"' '{print $4}' || echo "")
-          
-          if [ "$TOOLCHAIN_HASH" = "${{ steps.get-hash.outputs.SOURCE_HASH }}" ]; then
-            echo "TOOLCHAIN_EXISTS=true" >> $GITHUB_OUTPUT
-            TOOLCHAIN_DATE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}" | grep "published_at" | awk -F '"' '{print $4}')
-            echo "TOOLCHAIN_DATE=$TOOLCHAIN_DATE" >> $GITHUB_OUTPUT
-            echo "工具链已存在且源码版本匹配，将复用工具链"
-          else
-            echo "TOOLCHAIN_EXISTS=false" >> $GITHUB_OUTPUT
-            echo "工具链存在但源码版本不匹配，需要重新编译"
-          fi
-        else
-          echo "TOOLCHAIN_EXISTS=false" >> $GITHUB_OUTPUT
-          echo "工具链不存在，需要编译"
-        fi
+# TTYD 自动登录
+#sed -i 's|/bin/login|/bin/login -f root|g' feeds/packages/utils/ttyd/files/ttyd.config
 
-  Build:
-    needs: [Check-Toolchain]
-    runs-on: ubuntu-22.04
-    if: needs.Check-Toolchain.outputs.TOOLCHAIN_EXISTS == 'false'
+# Git稀疏克隆，只克隆指定目录到本地
+function git_sparse_clone() {
+  branch="$1" repourl="$2" && shift 2
+  git clone --depth=1 -b $branch --single-branch --filter=blob:none --sparse $repourl
+  repodir=$(echo $repourl | awk -F '/' '{print $(NF)}')
+  cd $repodir && git sparse-checkout set $@
+  mv -f $@ ../package
+  cd .. && rm -rf $repodir
+}
 
-    outputs:
-      COMMIT_AUTHOR: ${{ steps.clone.outputs.COMMIT_AUTHOR }}
-      COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
-      COMMIT_MESSAGE: ${{ steps.clone.outputs.COMMIT_MESSAGE }}
-      COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ steps.network.outputs.DEFAULT_IP }}
-      DEFAULT_NETMASK: ${{ steps.network.outputs.DEFAULT_NETMASK }}
-      DEFAULT_GATEWAY: ${{ steps.network.outputs.DEFAULT_GATEWAY }}
-      SOURCE_HASH: ${{ steps.clone.outputs.SOURCE_HASH }}
+# 移除要替换的包
+rm -rf feeds/packages/net/mosdns
+rm -rf feeds/packages/net/msd_lite
+rm -rf feeds/packages/net/smartdns
+rm -rf feeds/luci/themes/luci-theme-argon
+rm -rf feeds/luci/themes/luci-theme-netgear
+# rm -rf feeds/luci/applications/luci-app-dockerman
+rm -rf feeds/luci/applications/luci-app-mosdns
+rm -rf feeds/luci/applications/luci-app-netdata
+rm -rf feeds/luci/applications/luci-app-serverchan
+rm -rf feeds/luci/applications/luci-app-vlmcsd
+rm -rf feeds/luci/applications/luci-app-vsftpd
+rm -rf feeds/luci/applications/luci-app-accesscontrol
+rm -rf feeds/luci/applications/luci-app-qbittorrent-simple
+rm -rf feeds/luci/applications/luci-app-qbittorrent
 
-    steps:
-    - name: Check Server Performance
-      run: |
-        echo "警告⚠"
-        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-        echo -e "已知CPU型号(降序): 7763，8370C，8272CL，8171M，E5-2673\n"
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
-        echo "CPU核心数量: $(nproc)"
-        echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
-        echo "--------------------------内存信息--------------------------"
-        echo "已安装内存详细信息:"
-        echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
-        echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+# 添加额外插件
+git clone https://github.com/sbwml/openwrt-qBittorrent package/qBittorrent
+git clone https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
+git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
+git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
+# git clone --depth=1 https://github.com/kongfl888/luci-app-adguardhome package/luci-app-adguardhome
+# git clone --depth=1 -b openwrt-18.06 https://github.com/tty228/luci-app-wechatpush package/luci-app-serverchan
+# git clone --depth=1 https://github.com/ilxp/luci-app-ikoolproxy package/luci-app-ikoolproxy
+# git clone --depth=1 https://github.com/Jason6111/luci-app-netdata package/luci-app-netdata
 
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        docker rmi $(docker images -q) 2>/dev/null || true
-        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
-        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
-        sudo -E systemctl daemon-reload
-        sudo -E apt-get -y autoremove --purge
-        sudo -E apt-get -y clean
-        sudo timedatectl set-timezone "$TZ"
+svn export https://github.com/Lienol/openwrt-package/tree/main/luci-app-filebrowser package/luci-app-filebrowser
+# svn export https://github.com/Lienol/openwrt-package/tree/main/luci-app-ssr-mudb-server package/luci-app-ssr-mudb-server
+# svn export https://github.com/lisaac/luci-app-dockerman/trunk/applications/luci-app-dockerman package/luci-app-dockerman
+# svn export https://github.com/immortalwrt/luci/branches/openwrt-18.06/applications/luci-app-eqos package/luci-app-eqos
+# svn export https://github.com/syb999/openwrt-19.07.1/trunk/package/network/services/msd_lite package/msd_lite
 
-    - name: Combine Disks
-      uses: easimon/maximize-build-space@master
-      with:
-        swap-size-mb: 1024
-        temp-reserve-mb: 100
-        root-reserve-mb: 1024
+# 科学上网插件
+# git clone --depth=1 https://github.com/fw876/helloworld package/luci-app-ssr-plus
+# git clone --depth=1 https://github.com/jerrykuku/luci-app-vssr package/luci-app-vssr
+# git clone --depth=1 https://github.com/jerrykuku/lua-maxminddb package/lua-maxminddb
+# git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages package/openwrt-passwall
+# svn export https://github.com/xiaorouji/openwrt-passwall/trunk/luci-app-passwall package/luci-app-passwall
+# svn export https://github.com/xiaorouji/openwrt-passwall2/trunk/luci-app-passwall2 package/luci-app-passwall2
+svn export https://github.com/vernesong/OpenClash/trunk/luci-app-openclash package/luci-app-openclash
 
-    - name: Checkout
-      uses: actions/checkout@main
+# Themes
+git clone https://github.com/sirpdboy/luci-theme-kucat package/luci-theme-kucat
+git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/luci-theme-edge
+git clone --depth=1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
+git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
+git clone --depth=1 https://github.com/xiaoqingfengATGH/luci-theme-infinityfreedom package/luci-theme-infinityfreedom
+svn export https://github.com/haiibo/packages/trunk/luci-theme-atmaterial package/luci-theme-atmaterial
+svn export https://github.com/haiibo/packages/trunk/luci-theme-opentomcat package/luci-theme-opentomcat
+svn export https://github.com/haiibo/packages/trunk/luci-theme-netgear package/luci-theme-netgear
 
-    - name: Clone Source Code
-      id: clone
-      run: |
-        df -hT $GITHUB_WORKSPACE
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        cd openwrt
-        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-        SOURCE_HASH=$(git rev-parse HEAD)
-        echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_ENV
-        echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_OUTPUT
-        COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-        COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_OUTPUT
-        COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
-        COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_OUTPUT
+# 更改 Argon 主题背景
+cp -f $GITHUB_WORKSPACE/images/bg3.jpg package/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
 
-    - name: Generate Variables
-      id: variable
-      run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
-        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_OUTPUT
-        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
+# 晶晨宝盒
+svn export https://github.com/ophub/luci-app-amlogic/tree/main/luci-app-amlogic package/luci-app-amlogic
+sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/haiibo/OpenWrt'|g" package/luci-app-amlogic/root/etc/config/amlogic
+# sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" package/luci-app-amlogic/root/etc/config/amlogic
+sed -i "s|ARMv8|ARMv8_PLUS|g" package/luci-app-amlogic/root/etc/config/amlogic
 
-    - name: Extract Network Configuration
-      id: network
-      run: |
-        cd $OPENWRT_PATH
-        
-        # 从 .config 读取 IP 地址
-        DEFAULT_IP=$(grep "^CONFIG_IP_ADDR=" .config 2>/dev/null | awk -F '"' '{print $2}' | head -1)
-        
-        # 如果没有找到，从 package 默认配置读取
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "package/base-files/files/bin/config_generate" ]; then
-            DEFAULT_IP=$(grep "ipaddr:" package/base-files/files/bin/config_generate | grep -m1 "192.168" | sed -n "s/.*ipaddr:'\([^']*\)'.*/\1/p")
-          fi
-        fi
-        
-        # 如果还是没有，尝试从自定义文件读取
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "files/etc/config/network" ]; then
-            DEFAULT_IP=$(grep "option ipaddr" files/etc/config/network | awk '{print $3}')
-          fi
-        fi
-        
-        # 读取网关和子网掩码
-        DEFAULT_GATEWAY=$(grep "^CONFIG_GATEWAY=" .config 2>/dev/null | awk -F '"' '{print $2}' || echo "")
-        DEFAULT_NETMASK=$(grep "^CONFIG_NETMASK=" .config 2>/dev/null | awk -F '"' '{print $2}' || echo "255.255.255.0")
-        
-        # 最终的默认值
-        DEFAULT_IP=${DEFAULT_IP:-"192.168.1.1"}
-        DEFAULT_NETMASK=${DEFAULT_NETMASK:-"255.255.255.0"}
-        
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_ENV
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_OUTPUT
-        echo "DEFAULT_GATEWAY=$DEFAULT_GATEWAY" >> $GITHUB_ENV
-        echo "DEFAULT_GATEWAY=$DEFAULT_GATEWAY" >> $GITHUB_OUTPUT
-        echo "DEFAULT_NETMASK=$DEFAULT_NETMASK" >> $GITHUB_ENV
-        echo "DEFAULT_NETMASK=$DEFAULT_NETMASK" >> $GITHUB_OUTPUT
-        
-        echo "检测到的网络配置："
-        echo "默认 IP 地址: $DEFAULT_IP"
-        echo "默认网关: ${DEFAULT_GATEWAY:-未设置}"
-        echo "子网掩码: $DEFAULT_NETMASK"
+# SmartDNS
+git clone --depth=1 -b lede https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+git clone --depth=1 https://github.com/pymumu/openwrt-smartdns package/smartdns
 
-    - name: Download Cached Toolchain
-      if: env.CACHE_TOOLCHAIN == 'true'
-      run: |
-        cd $OPENWRT_PATH
-        TOOLCHAIN_URL="https://github.com/${{ github.repository }}/releases/download/${{ env.TOOLCHAIN_TAG }}/toolchain.tar.gz"
-        
-        if wget -q --spider "$TOOLCHAIN_URL"; then
-          echo "发现缓存的工具链，正在下载..."
-          wget -q "$TOOLCHAIN_URL" -O toolchain.tar.gz
-          tar -xzf toolchain.tar.gz
-          rm toolchain.tar.gz
-          echo "工具链解压完成"
-        else
-          echo "未找到缓存的工具链，将重新编译"
-        fi
+# msd_lite
+# git clone --depth=1 https://github.com/ximiTech/luci-app-msd_lite package/luci-app-msd_lite
+# git clone --depth=1 https://github.com/ximiTech/msd_lite package/msd_lite
 
-    - name: Cache Toolchain (Local Cache)
-      if: env.CACHE_TOOLCHAIN == 'true'
-      uses: HiGarfield/cachewrtbuild@main
-      with:
-        ccache: false
-        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
-        prefix: ${{ env.OPENWRT_PATH }}
+# MosDNS
+# svn export https://github.com/sbwml/luci-app-mosdns/trunk/luci-app-mosdns package/luci-app-mosdns
+# svn export https://github.com/sbwml/luci-app-mosdns/trunk/mosdns package/mosdns
 
-    - name: Install Feeds
-      run: |
-        cd $OPENWRT_PATH
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+# DDNS.to
+svn export https://github.com/linkease/nas-packages-luci/tree/main/luci/luci-app-ddnsto package/luci-app-ddnsto
+svn export https://github.com/linkease/nas-packages/tree/master/network/services/ddnsto package/ddnsto
 
-    - name: Load Custom Configuration
-      run: |
-        [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $GITHUB_WORKSPACE/scripts/*.sh
-        chmod +x $DIY_SCRIPT
-        cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+# Alist
+svn export https://github.com/sbwml/luci-app-alist/trunk/luci-app-alist package/luci-app-alist
+svn export https://github.com/sbwml/luci-app-alist/trunk/alist package/alist
 
-    - name: Download DL Package
-      run: |
-        cd $OPENWRT_PATH
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+# iStore
+svn export https://github.com/linkease/istore-ui/trunk/app-store-ui package/app-store-ui
+svn export https://github.com/linkease/istore/trunk/luci package/luci-app-store
 
-    - name: Compile Firmware
-      id: compile
-      run: |
-        cd $OPENWRT_PATH
-        
-        if [ -d "staging_dir/toolchain-*" ]; then
-          echo "使用现有工具链进行编译"
-        else
-          echo "需要编译工具链"
-        fi
-        
-        mkdir -p files/etc/uci-defaults
-        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+# 在线用户
+svn export https://github.com/haiibo/packages/trunk/luci-app-onliner package/luci-app-onliner
+sed -i '$i uci set nlbwmon.@nlbwmon[0].refresh_interval=2s' package/lean/default-settings/files/zzz-default-settings
+sed -i '$i uci commit nlbwmon' package/lean/default-settings/files/zzz-default-settings
+chmod 755 package/luci-app-onliner/root/usr/share/onliner/setnlbw.sh
 
-    - name: Package Toolchain
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH
-        if [ -d "staging_dir/toolchain-*" ]; then
-          tar -czf toolchain.tar.gz staging_dir/toolchain-* staging_dir/target-* 2>/dev/null || true
-          echo "TOOLCHAIN_PATH=$PWD/toolchain.tar.gz" >> $GITHUB_ENV
-        fi
+# x86 型号只显示 CPU 型号
+sed -i 's/${g}.*/${a}${b}${c}${d}${e}${f}${hydrid}/g' package/lean/autocore/files/x86/autocore
 
-    - name: Upload Toolchain to Release
-      if: steps.compile.outputs.status == 'success'
-      uses: ncipollo/release-action@v1
-      with:
-        name: Toolchain for ${{ env.TOOLCHAIN_TAG }}
-        allowUpdates: true
-        tag: ${{ env.TOOLCHAIN_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.TOOLCHAIN_PATH }}
-        body: |
-          **OpenWrt Toolchain Cache**
-          - 源码 Hash: ${{ env.SOURCE_HASH }}
-          - 编译时间: ${{ env.DATE }}
-          - 平台: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
-          - TOOLCHAIN_SOURCE_HASH: ${{ env.SOURCE_HASH }}
+# 修改本地时间格式
+sed -i 's/os.date()/os.date("%a %Y-%m-%d %H:%M:%S")/g' package/lean/autocore/files/*/index.htm
 
-    - name: Check Space Usage
-      if: (!cancelled())
-      run: df -hT
+# 修改版本为编译日期
+date_version=$(date +"%y.%m.%d")
+orig_version=$(cat "package/lean/default-settings/files/zzz-default-settings" | grep DISTRIB_REVISION= | awk -F "'" '{print $2}')
+sed -i "s/${orig_version}/R${date_version} by Haiibo/g" package/lean/default-settings/files/zzz-default-settings
 
-    - name: Upload Bin Directory
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
+# 修复 hostapd 报错
+cp -f $GITHUB_WORKSPACE/scripts/011-fix-mbo-modules-build.patch package/network/services/hostapd/patches/011-fix-mbo-modules-build.patch
 
-    - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+# 修改 Makefile
+find package/*/ -maxdepth 2 -path "*/Makefile" | xargs -i sed -i 's/..\/..\/luci.mk/$(TOPDIR)\/feeds\/luci\/luci.mk/g' {}
+find package/*/ -maxdepth 2 -path "*/Makefile" | xargs -i sed -i 's/..\/..\/lang\/golang\/golang-package.mk/$(TOPDIR)\/feeds\/packages\/lang\/golang\/golang-package.mk/g' {}
+find package/*/ -maxdepth 2 -path "*/Makefile" | xargs -i sed -i 's/PKG_SOURCE_URL:=@GHREPO/PKG_SOURCE_URL:=https:\/\/github.com/g' {}
+find package/*/ -maxdepth 2 -path "*/Makefile" | xargs -i sed -i 's/PKG_SOURCE_URL:=@GHCODELOAD/PKG_SOURCE_URL:=https:\/\/codeload.github.com/g' {}
 
-    - name: Upload Firmware To Artifact
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
+# 取消主题默认设置
+find package/luci-theme-*/* -type f -name '*luci-theme-*' -print -exec sed -i '/set luci.main.mediaurlbase/d' {} \;
 
-    - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
-        allowUpdates: true
-        tag: ${{ env.FIRMWARE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is Temporary Firmware for Armvirt 64**
-          ### 📒 固件信息
-          - 🚀 成品固件点击此处跳转➦[PLUS](https://github.com/haiibo/OpenWrt/releases/tag/ARMv8_PLUS)即可下载
-          - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (多功能临时固件)
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
-          - 🔑 默认密码: password
-          - 📡 子网掩码: ${{ env.DEFAULT_NETMASK }}
-          ${{ env.DEFAULT_GATEWAY != '' && format('- 🚪 默认网关: {0}', env.DEFAULT_GATEWAY) || '' }}
-          ### 🧊 固件版本
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.COMMIT_AUTHOR }}
-          - ${{ env.COMMIT_DATE }}
-          - ${{ env.COMMIT_MESSAGE }}
-          - ${{ env.COMMIT_HASH }}
+# 调整 V2ray服务器 到 VPN 菜单
+# sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/controller/*.lua
+# sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/model/cbi/v2ray_server/*.lua
+# sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/view/v2ray_server/*.htm
 
-  Build-With-Cached-Toolchain:
-    needs: [Check-Toolchain]
-    runs-on: ubuntu-22.04
-    if: needs.Check-Toolchain.outputs.TOOLCHAIN_EXISTS == 'true'
-
-    outputs:
-      COMMIT_AUTHOR: ${{ steps.clone.outputs.COMMIT_AUTHOR }}
-      COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
-      COMMIT_MESSAGE: ${{ steps.clone.outputs.COMMIT_MESSAGE }}
-      COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ steps.network.outputs.DEFAULT_IP }}
-      DEFAULT_NETMASK: ${{ steps.network.outputs.DEFAULT_NETMASK }}
-      DEFAULT_GATEWAY: ${{ steps.network.outputs.DEFAULT_GATEWAY }}
-
-    steps:
-    - name: Check Server Performance
-      run: |
-        echo "使用缓存的工具链进行快速编译"
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU核心数量: $(nproc)"
-        echo "--------------------------内存信息--------------------------"
-        df -hT
-
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
-        sudo timedatectl set-timezone "$TZ"
-
-    - name: Combine Disks
-      uses: easimon/maximize-build-space@master
-      with:
-        swap-size-mb: 1024
-        temp-reserve-mb: 100
-        root-reserve-mb: 1024
-
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Clone Source Code
-      id: clone
-      run: |
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        cd openwrt
-        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-        COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-        COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_OUTPUT
-        COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
-        COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_OUTPUT
-
-    - name: Generate Variables
-      id: variable
-      run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
-        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_OUTPUT
-        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
-
-    - name: Extract Network Configuration
-      id: network
-      run: |
-        cd $OPENWRT_PATH
-        
-        DEFAULT_IP=$(grep "^CONFIG_IP_ADDR=" .config 2>/dev/null | awk -F '"' '{print $2}' | head -1)
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "package/base-files/files/bin/config_generate" ]; then
-            DEFAULT_IP=$(grep "ipaddr:" package/base-files/files/bin/config_generate | grep -m1 "192.168" | sed -n "s/.*ipaddr:'\([^']*\)'.*/\1/p")
-          fi
-        fi
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "files/etc/config/network" ]; then
-            DEFAULT_IP=$(grep "option ipaddr" files/etc/config/network | awk '{print $3}')
-          fi
-        fi
-        
-        DEFAULT_GATEWAY=$(grep "^CONFIG_GATEWAY=" .config 2>/dev/null | awk -F '"' '{print $2}' || echo "")
-        DEFAULT_NETMASK=$(grep "^CONFIG_NETMASK=" .config 2>/dev/null | awk -F '"' '{print $2}' || echo "255.255.255.0")
-        
-        DEFAULT_IP=${DEFAULT_IP:-"192.168.1.1"}
-        DEFAULT_NETMASK=${DEFAULT_NETMASK:-"255.255.255.0"}
-        
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_ENV
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_OUTPUT
-        echo "DEFAULT_GATEWAY=$DEFAULT_GATEWAY" >> $GITHUB_ENV
-        echo "DEFAULT_GATEWAY=$DEFAULT_GATEWAY" >> $GITHUB_OUTPUT
-        echo "DEFAULT_NETMASK=$DEFAULT_NETMASK" >> $GITHUB_ENV
-        echo "DEFAULT_NETMASK=$DEFAULT_NETMASK" >> $GITHUB_OUTPUT
-        
-        echo "检测到的网络配置："
-        echo "默认 IP 地址: $DEFAULT_IP"
-
-    - name: Download Cached Toolchain from Release
-      run: |
-        cd $OPENWRT_PATH
-        TOOLCHAIN_URL="https://github.com/${{ github.repository }}/releases/download/${{ env.TOOLCHAIN_TAG }}/toolchain.tar.gz"
-        
-        echo "正在下载缓存的工具链..."
-        wget -q --show-progress "$TOOLCHAIN_URL" -O toolchain.tar.gz
-        tar -xzf toolchain.tar.gz
-        rm toolchain.tar.gz
-        echo "工具链解压完成，将使用缓存进行编译"
-
-    - name: Install Feeds
-      run: |
-        cd $OPENWRT_PATH
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: Load Custom Configuration
-      run: |
-        [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $GITHUB_WORKSPACE/scripts/*.sh
-        chmod +x $DIY_SCRIPT
-        cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
-
-    - name: Download DL Package
-      run: |
-        cd $OPENWRT_PATH
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Compile Firmware with Cached Toolchain
-      id: compile
-      run: |
-        cd $OPENWRT_PATH
-        
-        mkdir -p files/etc/uci-defaults
-        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-        
-        echo "使用缓存的工具链快速编译，线程数: $(nproc)"
-        make toolchain/install -j$(nproc) || true
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
-
-    - name: Check Space Usage
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload Bin Directory
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
-
-    - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-
-    - name: Upload Firmware To Artifact
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
-
-    - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
-        allowUpdates: true
-        tag: ${{ env.FIRMWARE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is Temporary Firmware for Armvirt 64 (Built with Cached Toolchain)**
-          ### 📒 固件信息
-          - 🚀 成品固件点击此处跳转➦[PLUS](https://github.com/haiibo/OpenWrt/releases/tag/ARMv8_PLUS)即可下载
-          - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (多功能临时固件)
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
-          - 🔑 默认密码: password
-          - ⚡ 编译方式: 使用缓存的工具链快速编译
-          ### 🧊 固件版本
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.COMMIT_AUTHOR }}
-          - ${{ env.COMMIT_DATE }}
-          - ${{ env.COMMIT_MESSAGE }}
-          - ${{ env.COMMIT_HASH }}
-
-  Package:
-    needs: [Build, Build-With-Cached-Toolchain]
-    runs-on: ubuntu-22.04
-    if: always() && (needs.Build.result == 'success' || needs.Build-With-Cached-Toolchain.result == 'success')
-    
-    env:
-      COMMIT_AUTHOR: ${{ needs.Build.outputs.COMMIT_AUTHOR || needs.Build-With-Cached-Toolchain.outputs.COMMIT_AUTHOR }}
-      COMMIT_DATE: ${{ needs.Build.outputs.COMMIT_DATE || needs.Build-With-Cached-Toolchain.outputs.COMMIT_DATE }}
-      COMMIT_MESSAGE: ${{ needs.Build.outputs.COMMIT_MESSAGE || needs.Build-With-Cached-Toolchain.outputs.COMMIT_MESSAGE }}
-      COMMIT_HASH: ${{ needs.Build.outputs.COMMIT_HASH || needs.Build-With-Cached-Toolchain.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ needs.Build.outputs.DEVICE_TARGET || needs.Build-With-Cached-Toolchain.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ needs.Build.outputs.DEVICE_SUBTARGET || needs.Build-With-Cached-Toolchain.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ needs.Build.outputs.DEFAULT_IP || needs.Build-With-Cached-Toolchain.outputs.DEFAULT_IP }}
-      DEFAULT_NETMASK: ${{ needs.Build.outputs.DEFAULT_NETMASK || needs.Build-With-Cached-Toolchain.outputs.DEFAULT_NETMASK }}
-      DEFAULT_GATEWAY: ${{ needs.Build.outputs.DEFAULT_GATEWAY || needs.Build-With-Cached-Toolchain.outputs.DEFAULT_GATEWAY }}
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        docker rmi $(docker images -q) 2>/dev/null || true
-        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
-        sudo -E apt-get -y autoremove --purge
-        sudo -E apt-get -y clean
-        sudo timedatectl set-timezone "$TZ"
-
-    - name: Download Armvirt Firmware
-      id: download
-      run: |
-        FIRMWARE_PATH=openwrt/bin/targets/armvirt/64
-        [ -d $FIRMWARE_PATH ] || mkdir -p $FIRMWARE_PATH
-        cd $FIRMWARE_PATH
-        wget -q $(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" | grep "$FIRMWARE_TAG.*rootfs.tar.gz" | head -1 | awk -F '"' '{print $4}')
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
-
-    - name: Package OpenWrt Firmware
-      if: steps.download.outputs.status == 'success'
-      uses: ophub/flippy-openwrt-actions@main
-      env:
-        OPENWRT_ARMVIRT: openwrt/bin/targets/*/*/*rootfs.tar.gz
-        PACKAGE_SOC: l1pro
-        WHOAMI: Fxym
-        KERNEL_VERSION_NAME: 6.12.y_6.18.y
-        KERNEL_AUTO_LATEST: true
-        DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
-
-    - name: Upload OpenWrt To Artifact
-      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
-      uses: kittaakos/upload-artifact-as-is@master
-      with:
-        path: ${{ env.PACKAGED_OUTPUTPATH }}
-
-    - name: Upload OpenWrt To Release
-      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: R${{ env.DATE }} for ${{ env.OPENWRT_TAG }}
-        allowUpdates: true
-        removeArtifacts: true
-        tag: ${{ env.OPENWRT_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
-        body: |
-          **This is OpenWrt Firmware for Armvirt 64**
-          ### 📒 固件信息
-          - 🚀 ARMv8 多功能版，集成插件多适合折腾
-          - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
-          - 🔑 默认密码: password
-          ### 🍻 安装与更新
-          - 用插件安装: 系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
-          - 用命令安装: U盘启动成功后输入命令 `openwrt-install-amlogic` 按照英文提示写入到 emmc
-          - 用插件更新: 系统 → 晶晨宝盒 → 在线下载更新 → 完整更新全系统
-          - 用命令更新: 上传固件到 `/mnt/mmcblk2p4` 目录，输入命令 `openwrt-update-amlogic` 即可更新
-          - 注意: 如非 `amlogic` 平台，请将其更改为对应平台 `rockchip` `allwinner`
-          - 部分常见问题及注意事项请参考恩山论坛F大➦[最新帖](https://www.right.com.cn/forum/thread-4076037-1-1.html)
-          ### 🧊 固件版本
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.COMMIT_AUTHOR }}
-          - ${{ env.COMMIT_DATE }}
-          - ${{ env.COMMIT_MESSAGE }}
-          - ${{ env.COMMIT_HASH }}
+./scripts/feeds update -a
+./scripts/feeds install -a
