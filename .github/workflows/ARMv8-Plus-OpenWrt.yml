@@ -2,6 +2,12 @@ name: ARMv8 Plus OpenWrt
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild_toolchain:
+        description: '强制重建 Toolchain'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: 0 20 * * *
 
@@ -28,6 +34,7 @@ jobs:
       DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
       SOURCE_HASH: ${{ steps.clone.outputs.SOURCE_HASH }}
+      TOOLCHAIN_REBUILD: ${{ steps.check_toolchain.outputs.rebuild }}
     
     steps:
     - name: Check Server Performance
@@ -94,13 +101,55 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
+    - name: Check Existing Toolchain
+      id: check_toolchain
+      run: |
+        # 强制重建
+        if [ "${{ github.event.inputs.force_rebuild_toolchain }}" == "true" ]; then
+          echo "强制重建 Toolchain"
+          echo "rebuild=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # 检查 Release 中是否存在 Toolchain
+        echo "检查已发布的 Toolchain..."
+        RELEASE_INFO=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TOOLCHAIN_TAG" || true)
+        
+        if [ -z "$RELEASE_INFO" ] || echo "$RELEASE_INFO" | grep -q '"message": "Not Found"'; then
+          echo "未找到已发布的 Toolchain，需要编译"
+          echo "rebuild=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # 获取已发布 Toolchain 的源码 Hash
+        PUBLISHED_HASH=$(echo "$RELEASE_INFO" | grep -oP 'TOOLCHAIN_SOURCE_HASH: \K[a-f0-9]+' || true)
+        
+        if [ -z "$PUBLISHED_HASH" ]; then
+          echo "无法获取已发布 Toolchain 的源码 Hash，需要编译"
+          echo "rebuild=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        echo "当前源码 Hash: $SOURCE_HASH"
+        echo "已发布 Toolchain 源码 Hash: $PUBLISHED_HASH"
+        
+        if [ "$SOURCE_HASH" == "$PUBLISHED_HASH" ]; then
+          echo "源码未更新，跳过 Toolchain 编译"
+          echo "rebuild=false" >> $GITHUB_OUTPUT
+        else
+          echo "源码已更新，需要重新编译 Toolchain"
+          echo "rebuild=true" >> $GITHUB_OUTPUT
+        fi
+
     - name: Install Feeds
+      if: steps.check_toolchain.outputs.rebuild == 'true'
       run: |
         cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
     - name: Load Custom Configuration
+      if: steps.check_toolchain.outputs.rebuild == 'true'
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
@@ -112,6 +161,7 @@ jobs:
         bash $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
 
     - name: Download DL Package
+      if: steps.check_toolchain.outputs.rebuild == 'true'
       run: |
         cd $OPENWRT_PATH
         make defconfig
@@ -121,6 +171,7 @@ jobs:
 
     - name: Compile Toolchain
       id: compile
+      if: steps.check_toolchain.outputs.rebuild == 'true'
       run: |
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile toolchain"
@@ -129,7 +180,7 @@ jobs:
         echo "TOOLCHAIN_DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
 
     - name: Package Toolchain
-      if: steps.compile.outputs.status == 'success'
+      if: steps.check_toolchain.outputs.rebuild == 'true' && steps.compile.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH
         
@@ -154,7 +205,7 @@ jobs:
         fi
 
     - name: Upload Toolchain to Release
-      if: steps.compile.outputs.status == 'success' && env.TOOLCHAIN_PATH != ''
+      if: steps.check_toolchain.outputs.rebuild == 'true' && steps.compile.outputs.status == 'success' && env.TOOLCHAIN_PATH != ''
       uses: ncipollo/release-action@v1
       with:
         name: Toolchain for ${{ env.TOOLCHAIN_TAG }}
@@ -171,7 +222,7 @@ jobs:
           - TOOLCHAIN_SOURCE_HASH: ${{ env.SOURCE_HASH }}
 
     - name: Cache Toolchain
-      if: env.CACHE_TOOLCHAIN == 'true' && steps.compile.outputs.status == 'success'
+      if: steps.check_toolchain.outputs.rebuild == 'true' && env.CACHE_TOOLCHAIN == 'true' && steps.compile.outputs.status == 'success'
       uses: HiGarfield/cachewrtbuild@main
       with:
         ccache: false
@@ -228,7 +279,34 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
+    - name: Download Toolchain from Release
+      if: needs.Toolchain.outputs.TOOLCHAIN_REBUILD == 'false'
+      run: |
+        echo "从 Release 下载 Toolchain..."
+        cd $OPENWRT_PATH
+        
+        # 获取 Toolchain 下载链接
+        DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TOOLCHAIN_TAG" | \
+          grep -o '"browser_download_url": "[^"]*toolchain[^"]*"' | \
+          awk -F '"' '{print $4}')
+        
+        if [ -z "$DOWNLOAD_URL" ]; then
+          echo "错误: 无法获取 Toolchain 下载链接"
+          exit 1
+        fi
+        
+        echo "下载地址: $DOWNLOAD_URL"
+        wget -q --show-progress "$DOWNLOAD_URL" -O toolchain.tar.gz
+        
+        echo "解压 Toolchain..."
+        tar -xzf toolchain.tar.gz
+        rm -f toolchain.tar.gz
+        
+        echo "Toolchain 恢复完成"
+        ls -la staging_dir/
+
     - name: Restore Toolchain Cache
+      if: needs.Toolchain.outputs.TOOLCHAIN_REBUILD == 'true'
       uses: HiGarfield/cachewrtbuild@main
       with:
         ccache: false
