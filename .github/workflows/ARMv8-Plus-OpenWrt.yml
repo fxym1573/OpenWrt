@@ -1,11 +1,9 @@
 #===============================================
-# Description: Build OpenWrt
+# Description: Build OpenWrt for L1 Pro (我家云)
 # File name: build-openwrt.yml
-# License: MIT
-# Modified: Fixed architecture detection (auto-detect from config file)
 #===============================================
 
-name: ARMv8 Plus OpenWrt
+name: ARMv8 Plus OpenWrt for L1 Pro
 
 on:
   workflow_dispatch:
@@ -29,7 +27,7 @@ env:
   FIRMWARE_RELEASE: true
   FIRMWARE_TAG: ROOTFS_PLUS
   OPENWRT_RELEASE: true
-  OPENWRT_TAG: ARMv8_PLUS
+  OPENWRT_TAG: L1Pro_ARMv8_PLUS
   TZ: Asia/Shanghai
 
 jobs:
@@ -98,28 +96,13 @@ jobs:
         echo ">>> 执行 make defconfig"
         make defconfig
         
-        # 验证架构配置
-        echo ">>> 验证最终架构配置"
-        grep "CONFIG_TARGET_BOARD" .config
-        grep "CONFIG_TARGET_rockchip" .config | head -3 2>/dev/null || true
-        
-        # 保存目标平台信息供后续使用
+        # 保存目标平台信息
         export DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | head -1 | awk -F '"' '{print $2}')
         export DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | head -1 | awk -F '"' '{print $2}')
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         
         echo ">>> 目标平台: $DEVICE_TARGET/$DEVICE_SUBTARGET"
-
-    - name: Debug Toolchain Configuration
-      run: |
-        cd $OPENWRT_PATH
-        echo "=== 目标架构验证 ==="
-        grep "CONFIG_TARGET_BOARD\|CONFIG_TARGET_SUBTARGET" .config | head -5
-        echo "=== GCC Version ==="
-        gcc --version
-        echo "=== Toolchain structure ==="
-        ls -la toolchain/gcc/ | head -10
 
     - name: Generate Variables
       id: env
@@ -200,17 +183,6 @@ jobs:
         echo -e "$(nproc) thread compile"
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
 
-    - name: Verify Toolchain Architecture
-      if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
-      run: |
-        cd $OPENWRT_PATH
-        echo "=== 验证工具链架构 ==="
-        TOOLCHAIN_GCC=$(find staging_dir -name "*-gcc" -type f | head -1)
-        if [ -n "$TOOLCHAIN_GCC" ]; then
-          TOOLCHAIN_ARCH=$($TOOLCHAIN_GCC -dumpmachine 2>/dev/null)
-          echo "工具链目标架构: $TOOLCHAIN_ARCH"
-        fi
-
     - name: Generate Toolchain Image
       if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
       run: |
@@ -244,11 +216,6 @@ jobs:
         
         # 保存哈希值
         echo "$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.hash
-        
-        # 保存元数据
-        echo "TOOLCHAIN_HASH=$CURRENT_HASH" > $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
-        echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
-        echo "SOURCE_HASH=$(cd openwrt && git rev-parse HEAD)" >> $GITHUB_WORKSPACE/output/$TOOLCHAIN_IMAGE.info
         
         echo "Toolchain image created successfully"
         ls -lh $GITHUB_WORKSPACE/output
@@ -296,16 +263,6 @@ jobs:
       TOOLCHAIN_HASH: ${{ needs.Toolchain.outputs.TOOLCHAIN_HASH }}
 
     steps:
-    - name: Check Server Performance
-      run: |
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
-        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
-        echo "--------------------------内存信息--------------------------"
-        free -h
-        echo "--------------------------硬盘信息--------------------------"
-        df -hT
-
     - name: Initialization Environment
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -319,7 +276,6 @@ jobs:
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
 
-    # ========== 关键修复：Checkout 你的仓库 ==========
     - name: Checkout Your Repository
       uses: actions/checkout@main
       with:
@@ -351,20 +307,12 @@ jobs:
       run: |
         cd openwrt
         
-        # ========== 关键修复：从 my-repo 复制配置文件 ==========
+        # 从 my-repo 复制配置文件
         if [ -f "../my-repo/$CONFIG_FILE" ]; then
           echo ">>> 找到配置文件: ../my-repo/$CONFIG_FILE"
           cp "../my-repo/$CONFIG_FILE" .config
-        elif [ -f "$GITHUB_WORKSPACE/my-repo/$CONFIG_FILE" ]; then
-          echo ">>> 找到配置文件: $GITHUB_WORKSPACE/my-repo/$CONFIG_FILE"
-          cp "$GITHUB_WORKSPACE/my-repo/$CONFIG_FILE" .config
         else
           echo "错误：找不到配置文件"
-          echo "当前目录：$(pwd)"
-          echo "检查 my-repo 目录："
-          ls -la ../my-repo/ || echo "my-repo 不存在"
-          echo "检查 my-repo/configs 目录："
-          ls -la ../my-repo/configs/ 2>/dev/null || echo "configs 目录不存在"
           exit 1
         fi
         
@@ -380,7 +328,7 @@ jobs:
         make defconfig
         
         echo "=== 目标平台配置 ==="
-        grep "CONFIG_TARGET_BOARD\|CONFIG_TARGET_rockchip" .config | head -5
+        grep "CONFIG_TARGET_BOARD\|CONFIG_TARGET_SUBTARGET" .config | head -5
 
     - name: Build Toolchain (if not cached)
       if: env.TOOLCHAIN_AVAILABLE == 'false'
@@ -471,6 +419,8 @@ jobs:
 
     env:
       VERSION_INFO: ${{ needs.Toolchain.outputs.VERSION_INFO }}
+      SOURCE_URL: ${{ env.SOURCE_URL }}
+      SOURCE_BRANCH: ${{ env.SOURCE_BRANCH }}
 
     steps:
     - name: Checkout
@@ -483,6 +433,7 @@ jobs:
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
         sudo -E apt-get -qq update
         sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo -E apt-get -y install dosfstools btrfs-progs uuid-runtime mtools parted
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
@@ -490,34 +441,31 @@ jobs:
     - name: Download Armvirt Firmware
       id: download
       run: |
-        [ -d openwrt-armvirt ] || mkdir -p openwrt-armvirt
-        curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | \
-          grep -o "$FIRMWARE_TAG.*rootfs.tar.gz" > DOWNLOAD_ARMVIRT 2>/dev/null || echo "" > DOWNLOAD_ARMVIRT
-        if [ -s DOWNLOAD_ARMVIRT ]; then
-          wget -q -P openwrt-armvirt https://github.com/$GITHUB_REPOSITORY/releases/download/$(cat DOWNLOAD_ARMVIRT)
+        mkdir -p openwrt-armvirt
+        # 获取 rootfs.tar.gz 的下载链接
+        curl -sL "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | \
+          grep -oE "https://.*rootfs.tar.gz" | head -1 > DOWNLOAD_URL
+        
+        if [ -s DOWNLOAD_URL ]; then
+          wget -q -P openwrt-armvirt $(cat DOWNLOAD_URL)
           echo "status=success" >> $GITHUB_OUTPUT
         else
           echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
         fi
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
 
     - name: Package OpenWrt Firmware
       if: steps.download.outputs.status == 'success'
-      uses: unifreq/openwrt_packit@master
+      uses: ophub/flippy-openwrt-actions@main
       env:
         OPENWRT_ARMVIRT: openwrt-armvirt/*rootfs.tar.gz
-        PACKAGE_SOC: l1pro_qemu
-        WHOAMI: Fxym
-        KERNEL_VERSION_NAME: 5.15.13_6.1.5
+        PACKAGE_SOC: l1pro
+        KERNEL_VERSION_NAME: 6.12.y_6.18.y
         KERNEL_AUTO_LATEST: true
+        WHOAMI: Fxym
         DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
-
-    - name: Upload OpenWrt To Artifact
-      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
-      uses: kittaakos/upload-artifact-as-is@master
-      with:
-        path: ${{ env.PACKAGED_OUTPUTPATH }}
 
     - name: Upload OpenWrt To Release
       if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE == 'true'
@@ -538,3 +486,9 @@ jobs:
           常见问题及注意事项请参考恩山F大➦[最新帖](https://www.right.com.cn/forum/thread-4076037-1-1.html)
           当前使用版本:【编译前的最后一次[➦主源码](https://github.com/coolsnowwolf/lede)更新记录】
           ${{ env.VERSION_INFO }}
+
+    - name: Upload OpenWrt To Artifact
+      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
+      uses: kittaakos/upload-artifact-as-is@master
+      with:
+        path: ${{ env.PACKAGED_OUTPUTPATH }}
