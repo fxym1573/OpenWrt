@@ -21,61 +21,9 @@ env:
   TZ: Asia/Shanghai
 
 jobs:
-  Check-Toolchain:
+  Build:
     runs-on: ubuntu-22.04
-    outputs:
-      TOOLCHAIN_EXISTS: ${{ steps.check.outputs.TOOLCHAIN_EXISTS }}
-      TOOLCHAIN_DATE: ${{ steps.check.outputs.Toolchain_DATE }}
-      SOURCE_HASH: ${{ steps.get-hash.outputs.SOURCE_HASH }}
-      NEED_BUILD: ${{ steps.check.outputs.NEED_BUILD }}
-    
-    steps:
-    - name: Checkout Source
-      uses: actions/checkout@main
-      with:
-        repository: coolsnowwolf/lede
-        branch: master
-        path: source
-    
-    - name: Get Source Commit Hash
-      id: get-hash
-      run: |
-        cd source
-        SOURCE_HASH=$(git rev-parse HEAD)
-        echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_OUTPUT
-        echo "当前源码 Hash: $SOURCE_HASH"
-    
-    - name: Check Toolchain Release
-      id: check
-      run: |
-        TOOLCHAIN_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}"
-        RESPONSE=$(curl -s -w "%{http_code}" "$TOOLCHAIN_URL" -o /dev/null)
-        
-        if [ "$RESPONSE" = "200" ]; then
-          TOOLCHAIN_HASH=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}" | grep -m1 "TOOLCHAIN_SOURCE_HASH" | awk -F '"' '{print $4}' || echo "")
-          
-          if [ "$TOOLCHAIN_HASH" = "${{ steps.get-hash.outputs.SOURCE_HASH }}" ]; then
-            echo "TOOLCHAIN_EXISTS=true" >> $GITHUB_OUTPUT
-            echo "NEED_BUILD=false" >> $GITHUB_OUTPUT
-            TOOLCHAIN_DATE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ env.TOOLCHAIN_TAG }}" | grep "published_at" | awk -F '"' '{print $4}')
-            echo "TOOLCHAIN_DATE=$TOOLCHAIN_DATE" >> $GITHUB_OUTPUT
-            echo "✓ 工具链已存在且源码版本匹配，将使用缓存的工具链快速编译"
-          else
-            echo "TOOLCHAIN_EXISTS=false" >> $GITHUB_OUTPUT
-            echo "NEED_BUILD=true" >> $GITHUB_OUTPUT
-            echo "✗ 工具链存在但源码版本不匹配，需要重新完整编译"
-          fi
-        else
-          echo "TOOLCHAIN_EXISTS=false" >> $GITHUB_OUTPUT
-          echo "NEED_BUILD=true" >> $GITHUB_OUTPUT
-          echo "✗ 工具链不存在，需要完整编译"
-        fi
 
-  Full-Build:
-    needs: [Check-Toolchain]
-    runs-on: ubuntu-22.04
-    if: needs.Check-Toolchain.outputs.NEED_BUILD == 'true'
-    
     outputs:
       COMMIT_AUTHOR: ${{ steps.clone.outputs.COMMIT_AUTHOR }}
       COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
@@ -83,23 +31,28 @@ jobs:
       COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
       DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ steps.network.outputs.DEFAULT_IP }}
-      SOURCE_HASH: ${{ steps.clone.outputs.SOURCE_HASH }}
 
     steps:
     - name: Check Server Performance
       run: |
-        echo "⚠️ 开始完整编译（包含工具链）"
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo -e "已知CPU型号(降序): 7763，8370C，8272CL，8171M，E5-2673\n"
         echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
         echo "CPU核心数量: $(nproc)"
+        echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
         echo "--------------------------内存信息--------------------------"
-        df -hT
+        echo "已安装内存详细信息:"
+        echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
     - name: Initialization Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        docker rmi $(docker images -q) 2>/dev/null || true
+        docker rmi $(docker images -q)
         sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
         sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
         sudo -E apt-get -y update
@@ -128,7 +81,6 @@ jobs:
         echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
         SOURCE_HASH=$(git rev-parse HEAD)
         echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_ENV
-        echo "SOURCE_HASH=$SOURCE_HASH" >> $GITHUB_OUTPUT
         COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
         echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
         echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
@@ -157,31 +109,13 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
-    - name: Extract Default IP Address
-      id: network
-      run: |
-        cd $OPENWRT_PATH
-        
-        DEFAULT_IP=$(grep "^CONFIG_IP_ADDR=" .config 2>/dev/null | awk -F '"' '{print $2}' | head -1)
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "package/base-files/files/bin/config_generate" ]; then
-            DEFAULT_IP=$(grep "ipaddr:" package/base-files/files/bin/config_generate | grep -m1 "192.168" | sed -n "s/.*ipaddr:'\([^']*\)'.*/\1/p")
-          fi
-        fi
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "files/etc/config/network" ]; then
-            DEFAULT_IP=$(grep "option ipaddr" files/etc/config/network | awk '{print $3}')
-          fi
-        fi
-        
-        DEFAULT_IP=${DEFAULT_IP:-"192.168.1.1"}
-        
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_ENV
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_OUTPUT
-        
-        echo "检测到默认 IP 地址: $DEFAULT_IP"
+    - name: Cache Toolchain
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
 
     - name: Install Feeds
       run: |
@@ -208,25 +142,20 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    - name: Compile Firmware
-      id: compile
+    - name: Compile Toolchain Only
+      id: compile_toolchain
       run: |
         cd $OPENWRT_PATH
-        
-        mkdir -p files/etc/uci-defaults
-        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-        
-        echo "开始完整编译（将自动按顺序编译工具链和固件）"
+        echo "========================================="
+        echo "开始编译工具链"
         echo "编译线程数: $(nproc)"
-        
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        echo "========================================="
+        make toolchain/compile -j$(nproc) || make toolchain/compile -j1
+        echo "toolchain_status=success" >> $GITHUB_OUTPUT
+        echo "TOOLCHAIN_DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
 
     - name: Package Toolchain
-      if: steps.compile.outputs.status == 'success'
+      if: steps.compile_toolchain.outputs.toolchain_status == 'success'
       run: |
         cd $OPENWRT_PATH
         if [ -d "staging_dir/toolchain-*" ]; then
@@ -236,7 +165,7 @@ jobs:
         fi
 
     - name: Upload Toolchain to Release
-      if: steps.compile.outputs.status == 'success'
+      if: steps.compile_toolchain.outputs.toolchain_status == 'success'
       uses: ncipollo/release-action@v1
       with:
         name: Toolchain for ${{ env.TOOLCHAIN_TAG }}
@@ -247,199 +176,38 @@ jobs:
         body: |
           **OpenWrt Toolchain Cache**
           - 源码 Hash: ${{ env.SOURCE_HASH }}
-          - 编译时间: ${{ env.DATE }}
+          - 编译时间: ${{ env.TOOLCHAIN_DATE }}
           - 平台: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
           - TOOLCHAIN_SOURCE_HASH: ${{ env.SOURCE_HASH }}
 
-    - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-
-    - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
-        allowUpdates: true
-        tag: ${{ env.FIRMWARE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is Temporary Firmware for Armvirt 64**
-          ### 📒 固件信息
-          - 🚀 成品固件点击此处跳转➦[PLUS](https://github.com/haiibo/OpenWrt/releases/tag/ARMv8_PLUS)即可下载
-          - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (多功能临时固件)
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
-          - 🔑 默认密码: password
-          ### 🧊 固件版本
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.COMMIT_AUTHOR }}
-          - ${{ env.COMMIT_DATE }}
-          - ${{ env.COMMIT_MESSAGE }}
-          - ${{ env.COMMIT_HASH }}
-
-  Fast-Build:
-    needs: [Check-Toolchain]
-    runs-on: ubuntu-22.04
-    if: needs.Check-Toolchain.outputs.NEED_BUILD == 'false'
-    
-    outputs:
-      COMMIT_AUTHOR: ${{ steps.clone.outputs.COMMIT_AUTHOR }}
-      COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
-      COMMIT_MESSAGE: ${{ steps.clone.outputs.COMMIT_MESSAGE }}
-      COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ steps.network.outputs.DEFAULT_IP }}
-
-    steps:
-    - name: Check Server Performance
-      run: |
-        echo "⚡ 开始快速编译（使用缓存的工具链）"
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU核心数量: $(nproc)"
-
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
-        sudo timedatectl set-timezone "$TZ"
-
-    - name: Combine Disks
-      uses: easimon/maximize-build-space@master
-      with:
-        swap-size-mb: 1024
-        temp-reserve-mb: 100
-        root-reserve-mb: 1024
-
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Clone Source Code
-      id: clone
-      run: |
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        cd openwrt
-        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-        COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-        COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
-        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_OUTPUT
-        COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
-        COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
-        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_OUTPUT
-
-    - name: Generate Variables
-      id: variable
-      run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
-        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_OUTPUT
-        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
-
-    - name: Extract Default IP Address
-      id: network
-      run: |
-        cd $OPENWRT_PATH
-        
-        DEFAULT_IP=$(grep "^CONFIG_IP_ADDR=" .config 2>/dev/null | awk -F '"' '{print $2}' | head -1)
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "package/base-files/files/bin/config_generate" ]; then
-            DEFAULT_IP=$(grep "ipaddr:" package/base-files/files/bin/config_generate | grep -m1 "192.168" | sed -n "s/.*ipaddr:'\([^']*\)'.*/\1/p")
-          fi
-        fi
-        
-        if [ -z "$DEFAULT_IP" ]; then
-          if [ -f "files/etc/config/network" ]; then
-            DEFAULT_IP=$(grep "option ipaddr" files/etc/config/network | awk '{print $3}')
-          fi
-        fi
-        
-        DEFAULT_IP=${DEFAULT_IP:-"192.168.1.1"}
-        
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_ENV
-        echo "DEFAULT_IP=$DEFAULT_IP" >> $GITHUB_OUTPUT
-        
-        echo "检测到默认 IP 地址: $DEFAULT_IP"
-
-    - name: Download Cached Toolchain from Release
-      run: |
-        cd $OPENWRT_PATH
-        TOOLCHAIN_URL="https://github.com/${{ github.repository }}/releases/download/${{ env.TOOLCHAIN_TAG }}/toolchain.tar.gz"
-        
-        echo "正在下载缓存的工具链..."
-        wget -q --show-progress "$TOOLCHAIN_URL" -O toolchain.tar.gz
-        tar -xzf toolchain.tar.gz
-        rm toolchain.tar.gz
-        echo "✓ 工具链解压完成，将跳过工具链编译"
-
-    - name: Install Feeds
-      run: |
-        cd $OPENWRT_PATH
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: Load Custom Configuration
-      run: |
-        [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $GITHUB_WORKSPACE/scripts/*.sh
-        chmod +x $DIY_SCRIPT
-        cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
-
-    - name: Download DL Package
-      run: |
-        cd $OPENWRT_PATH
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec rm -f {} \;
-
     - name: Compile Firmware
-      id: compile
+      id: compile_firmware
       run: |
         cd $OPENWRT_PATH
-        
         mkdir -p files/etc/uci-defaults
         cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-        
-        echo "使用缓存的工具链快速编译固件"
+        echo "========================================="
+        echo "工具链编译完成，开始编译固件"
         echo "编译线程数: $(nproc)"
-        
+        echo "========================================="
         make -j$(nproc) || make -j1 || make -j1 V=s
-        
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
+    - name: Check Space Usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload Bin Directory
+      if: steps.compile_firmware.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        path: ${{ env.OPENWRT_PATH }}/bin
+
     - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
+      if: steps.compile_firmware.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
@@ -449,8 +217,15 @@ jobs:
         rm -rf packages feeds.buildinfo version.buildinfo
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
+    - name: Upload Firmware To Artifact
+      if: steps.compile_firmware.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE_PATH }}
+
     - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      if: steps.compile_firmware.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -465,9 +240,8 @@ jobs:
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (多功能临时固件)
           - ⚽ 固件源码: ${{ env.REPO_URL }}
           - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
+          - 🌐 默认地址: 192.168.1.1
           - 🔑 默认密码: password
-          - ⚡ 编译方式: 使用缓存的工具链快速编译
           ### 🧊 固件版本
           - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
           - ${{ env.COMMIT_AUTHOR }}
@@ -476,18 +250,16 @@ jobs:
           - ${{ env.COMMIT_HASH }}
 
   Package:
-    needs: [Full-Build, Fast-Build]
+    needs: [Build]
     runs-on: ubuntu-22.04
-    if: always() && (needs.Full-Build.result == 'success' || needs.Fast-Build.result == 'success')
-    
+
     env:
-      COMMIT_AUTHOR: ${{ needs.Full-Build.outputs.COMMIT_AUTHOR || needs.Fast-Build.outputs.COMMIT_AUTHOR }}
-      COMMIT_DATE: ${{ needs.Full-Build.outputs.COMMIT_DATE || needs.Fast-Build.outputs.COMMIT_DATE }}
-      COMMIT_MESSAGE: ${{ needs.Full-Build.outputs.COMMIT_MESSAGE || needs.Fast-Build.outputs.COMMIT_MESSAGE }}
-      COMMIT_HASH: ${{ needs.Full-Build.outputs.COMMIT_HASH || needs.Fast-Build.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ needs.Full-Build.outputs.DEVICE_TARGET || needs.Fast-Build.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ needs.Full-Build.outputs.DEVICE_SUBTARGET || needs.Fast-Build.outputs.DEVICE_SUBTARGET }}
-      DEFAULT_IP: ${{ needs.Full-Build.outputs.DEFAULT_IP || needs.Fast-Build.outputs.DEFAULT_IP }}
+      COMMIT_AUTHOR: ${{ needs.Build.outputs.COMMIT_AUTHOR }}
+      COMMIT_DATE: ${{ needs.Build.outputs.COMMIT_DATE }}
+      COMMIT_MESSAGE: ${{ needs.Build.outputs.COMMIT_MESSAGE }}
+      COMMIT_HASH: ${{ needs.Build.outputs.COMMIT_HASH }}
+      DEVICE_TARGET: ${{ needs.Build.outputs.DEVICE_TARGET }}
+      DEVICE_SUBTARGET: ${{ needs.Build.outputs.DEVICE_SUBTARGET }}
 
     steps:
     - name: Checkout
@@ -497,7 +269,7 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        docker rmi $(docker images -q) 2>/dev/null || true
+        docker rmi $(docker images -q)
         sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
         sudo -E apt-get -y update
         sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
@@ -511,7 +283,7 @@ jobs:
         FIRMWARE_PATH=openwrt/bin/targets/armvirt/64
         [ -d $FIRMWARE_PATH ] || mkdir -p $FIRMWARE_PATH
         cd $FIRMWARE_PATH
-        wget -q $(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" | grep "$FIRMWARE_TAG.*rootfs.tar.gz" | head -1 | awk -F '"' '{print $4}')
+        wget -q $(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" | grep "$FIRMWARE_TAG.*rootfs.tar.gz" | awk -F '"' '{print $4}')
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
@@ -521,11 +293,17 @@ jobs:
       uses: ophub/flippy-openwrt-actions@main
       env:
         OPENWRT_ARMVIRT: openwrt/bin/targets/*/*/*rootfs.tar.gz
-        PACKAGE_SOC: l1pro
-        WHOAMI: Fxym
-        KERNEL_VERSION_NAME: 6.12.y_6.18.y
+        PACKAGE_SOC: all
+        WHOAMI: Haiibo
+        KERNEL_VERSION_NAME: 5.15.13_6.1.5
         KERNEL_AUTO_LATEST: true
-        DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
+        DISTRIB_REVISION: R${{ env.DATE1 }} by Haiibo
+
+    - name: Upload OpenWrt To Artifact
+      if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE != 'true'
+      uses: kittaakos/upload-artifact-as-is@master
+      with:
+        path: ${{ env.PACKAGED_OUTPUTPATH }}
 
     - name: Upload OpenWrt To Release
       if: env.PACKAGED_STATUS == 'success' && env.OPENWRT_RELEASE == 'true'
@@ -544,7 +322,7 @@ jobs:
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
           - ⚽ 固件源码: ${{ env.REPO_URL }}
           - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: ${{ env.DEFAULT_IP }}
+          - 🌐 默认地址: 192.168.1.1
           - 🔑 默认密码: password
           ### 🍻 安装与更新
           - 用插件安装: 系统 → 晶晨宝盒 → 安装 OpenWrt → 选择型号 → 安装
