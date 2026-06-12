@@ -319,7 +319,13 @@ jobs:
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Clone Source
+    # ========== 关键修复：Checkout 你的仓库 ==========
+    - name: Checkout Your Repository
+      uses: actions/checkout@main
+      with:
+        path: my-repo
+
+    - name: Clone OpenWrt Source
       run: |
         git clone $SOURCE_URL -b $SOURCE_BRANCH openwrt
         cd openwrt
@@ -345,8 +351,22 @@ jobs:
       run: |
         cd openwrt
         
-        # 复制完整配置
-        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        # ========== 关键修复：从 my-repo 复制配置文件 ==========
+        if [ -f "../my-repo/$CONFIG_FILE" ]; then
+          echo ">>> 找到配置文件: ../my-repo/$CONFIG_FILE"
+          cp "../my-repo/$CONFIG_FILE" .config
+        elif [ -f "$GITHUB_WORKSPACE/my-repo/$CONFIG_FILE" ]; then
+          echo ">>> 找到配置文件: $GITHUB_WORKSPACE/my-repo/$CONFIG_FILE"
+          cp "$GITHUB_WORKSPACE/my-repo/$CONFIG_FILE" .config
+        else
+          echo "错误：找不到配置文件"
+          echo "当前目录：$(pwd)"
+          echo "检查 my-repo 目录："
+          ls -la ../my-repo/ || echo "my-repo 不存在"
+          echo "检查 my-repo/configs 目录："
+          ls -la ../my-repo/configs/ 2>/dev/null || echo "configs 目录不存在"
+          exit 1
+        fi
         
         # 修复优化参数
         sed -i 's/CONFIG_TARGET_OPTIMIZATION="[^"]*"/CONFIG_TARGET_OPTIMIZATION="-Os -pipe -march=armv8-a"/g' .config
@@ -381,9 +401,9 @@ jobs:
     - name: Run DIY Script
       run: |
         cd openwrt
-        if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
-          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
-          $GITHUB_WORKSPACE/$DIY_SCRIPT || true
+        if [ -f "../my-repo/$DIY_SCRIPT" ]; then
+          chmod +x "../my-repo/$DIY_SCRIPT"
+          "../my-repo/$DIY_SCRIPT" || true
         fi
 
     - name: Download Packages
