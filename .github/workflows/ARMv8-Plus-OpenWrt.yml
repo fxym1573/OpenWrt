@@ -105,11 +105,11 @@ jobs:
         [ -e files ] && mv files $OPENWRT_PATH/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
         chmod +x $GITHUB_WORKSPACE/scripts/*.sh
-        chmod +x $DIY_SCRIPT
+        chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
         cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+        bash $GITHUB_WORKSPACE/$DIY_SCRIPT
+        bash $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
+        bash $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
 
     - name: Download DL Package
       run: |
@@ -132,13 +132,29 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH
-        if [ -d "staging_dir/toolchain-*" ]; then
-          tar -czf toolchain.tar.gz staging_dir/toolchain-* staging_dir/target-* 2>/dev/null || true
+        
+        # 查找实际的工具链目录
+        TOOLCHAIN_DIR=$(ls -d staging_dir/toolchain-* 2>/dev/null | head -1)
+        TARGET_DIR=$(ls -d staging_dir/target-* 2>/dev/null | head -1)
+        
+        if [ -n "$TOOLCHAIN_DIR" ] && [ -n "$TARGET_DIR" ]; then
+          echo "Found toolchain: $TOOLCHAIN_DIR"
+          echo "Found target: $TARGET_DIR"
+          tar -czf toolchain.tar.gz $TOOLCHAIN_DIR $TARGET_DIR
+          echo "Toolchain package size: $(ls -lh toolchain.tar.gz | awk '{print $5}')"
           echo "TOOLCHAIN_PATH=$PWD/toolchain.tar.gz" >> $GITHUB_ENV
+        elif [ -d "staging_dir" ]; then
+          echo "Toolchain directories not found individually, packaging entire staging_dir"
+          tar -czf toolchain.tar.gz staging_dir/
+          echo "Toolchain package size: $(ls -lh toolchain.tar.gz | awk '{print $5}')"
+          echo "TOOLCHAIN_PATH=$PWD/toolchain.tar.gz" >> $GITHUB_ENV
+        else
+          echo "Error: staging_dir not found!"
+          exit 1
         fi
 
     - name: Upload Toolchain to Release
-      if: steps.compile.outputs.status == 'success'
+      if: steps.compile.outputs.status == 'success' && env.TOOLCHAIN_PATH != ''
       uses: ncipollo/release-action@v1
       with:
         name: Toolchain for ${{ env.TOOLCHAIN_TAG }}
@@ -232,9 +248,9 @@ jobs:
         chmod +x $GITHUB_WORKSPACE/scripts/*.sh
         chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
         cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-        $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+        bash $GITHUB_WORKSPACE/$DIY_SCRIPT
+        bash $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
+        bash $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
 
     - name: Download DL Package
       run: |
