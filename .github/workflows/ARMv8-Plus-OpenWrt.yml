@@ -339,49 +339,59 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    - name: Compile Firmware
-      id: compile
+    # ============================================================
+    # 阶段 1: 编译内核 + 基础 rootfs（先产出 rootfs.tar.gz）
+    # ============================================================
+    - name: Compile Kernel and Target
+      id: compile_target
       run: |
         cd $OPENWRT_PATH
         mkdir -p files/etc/uci-defaults
         cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo -e "$(nproc) thread compile target/linux"
+        # 只编译 target/linux，生成 rootfs.tar.gz / squashfs / cpio.gz
+        make target/linux/compile -j$(nproc) || make target/linux/compile -j1
+        make target/linux/install -j$(nproc) || make target/linux/install -j1 || true
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    - name: Check Space Usage
-      if: (!cancelled())
-      run: df -hT
+    - name: Check RootFS Artifacts
+      id: check_artifacts
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        echo "=== 已生成的文件 ==="
+        ls -lh
+        if ls *rootfs.tar.gz 1>/dev/null 2>&1; then
+          echo "✅ rootfs.tar.gz 生成成功"
+          echo "ROOTFS_READY=true" >> $GITHUB_ENV
+        else
+          echo "❌ rootfs.tar.gz 未找到"
+          echo "ROOTFS_READY=false" >> $GITHUB_ENV
+        fi
 
-    - name: Upload Bin Directory
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
-
+    # ============================================================
+    # 阶段 2: 先上传临时固件（只要 rootfs.tar.gz 好了就发布）
+    # ============================================================
     - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
+      if: env.ROOTFS_READY == 'true'
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
+        tar -zcf Packages.tar.gz packages 2>/dev/null || true
+        rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
     - name: Upload Firmware To Artifact
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      if: env.ROOTFS_READY == 'true' && env.FIRMWARE_RELEASE != 'true'
       uses: actions/upload-artifact@main
       with:
         name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
 
-    - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+    - name: Upload Firmware To Release (临时固件)
+      if: env.ROOTFS_READY == 'true' && env.FIRMWARE_RELEASE == 'true'
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -404,6 +414,22 @@ jobs:
           - ${{ env.COMMIT_DATE }}
           - ${{ env.COMMIT_MESSAGE }}
           - ${{ env.COMMIT_HASH }}
+
+    # ============================================================
+    # 阶段 3: 尝试完整编译（包括 ext4 等，失败不影响流程）
+    # ============================================================
+    - name: Compile Remaining Packages (Optional)
+      id: compile_full
+      continue-on-error: true
+      run: |
+        cd $OPENWRT_PATH
+        echo "尝试完整编译（包括 ext4 镜像生成）..."
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Check Space Usage
+      if: (!cancelled())
+      run: df -hT
 
   Package:
     needs: [Build]
