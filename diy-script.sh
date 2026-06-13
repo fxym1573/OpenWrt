@@ -52,26 +52,14 @@ git clone https://github.com/sbwml/openwrt-qBittorrent package/qBittorrent
 git clone https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
 git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
 git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
-# git clone --depth=1 https://github.com/kongfl888/luci-app-adguardhome package/luci-app-adguardhome
-# git clone --depth=1 -b openwrt-18.06 https://github.com/tty228/luci-app-wechatpush package/luci-app-serverchan
-# git clone --depth=1 https://github.com/ilxp/luci-app-ikoolproxy package/luci-app-ikoolproxy
-# git clone --depth=1 https://github.com/Jason6111/luci-app-netdata package/luci-app-netdata
 
-svn export https://github.com/Lienol/openwrt-package/tree/main/luci-app-filebrowser package/luci-app-filebrowser
-# svn export https://github.com/Lienol/openwrt-package/tree/main/luci-app-ssr-mudb-server package/luci-app-ssr-mudb-server
-# svn export https://github.com/lisaac/luci-app-dockerman/trunk/applications/luci-app-dockerman package/luci-app-dockerman
-# svn export https://github.com/immortalwrt/luci/branches/openwrt-18.06/applications/luci-app-eqos package/luci-app-eqos
-# svn export https://github.com/syb999/openwrt-19.07.1/trunk/package/network/services/msd_lite package/msd_lite
+git_sparse_clone "main" " https://github.com/Lienol/openwrt-package.git" "luci-app-filebrowser"
+
+
 
 # 科学上网插件
-# git clone --depth=1 https://github.com/fw876/helloworld package/luci-app-ssr-plus
-# git clone --depth=1 https://github.com/jerrykuku/luci-app-vssr package/luci-app-vssr
-# git clone --depth=1 https://github.com/jerrykuku/lua-maxminddb package/lua-maxminddb
-# git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages package/openwrt-passwall
-# svn export https://github.com/xiaorouji/openwrt-passwall/trunk/luci-app-passwall package/luci-app-passwall
-# svn export https://github.com/xiaorouji/openwrt-passwall2/trunk/luci-app-passwall2 package/luci-app-passwall2
-svn export https://github.com/vernesong/OpenClash/trunk/luci-app-openclash package/luci-app-openclash
-git_sparse_clone "master" " https://github.com/vernesong/OpenClash.git" "luci-app-ddnsto"
+
+git_sparse_clone "master" " https://github.com/vernesong/OpenClash.git" "luci-app-openclash"
 
 
 # Themes
@@ -80,9 +68,7 @@ git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/
 git clone --depth=1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
 git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
 git clone --depth=1 https://github.com/xiaoqingfengATGH/luci-theme-infinityfreedom package/luci-theme-infinityfreedom
-svn export https://github.com/haiibo/packages/trunk/luci-theme-atmaterial package/luci-theme-atmaterial
-svn export https://github.com/haiibo/packages/trunk/luci-theme-opentomcat package/luci-theme-opentomcat
-svn export https://github.com/haiibo/packages/trunk/luci-theme-netgear package/luci-theme-netgear
+
 
 # 更改 Argon 主题背景
 cp -f $GITHUB_WORKSPACE/images/bg3.jpg package/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
