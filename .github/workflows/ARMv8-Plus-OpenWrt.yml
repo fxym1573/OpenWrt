@@ -23,7 +23,7 @@ env:
   FIRMWARE_TAG: ROOTFS_PLUS
   OPENWRT_RELEASE: true
   OPENWRT_TAG: ARMv8_PLUS
-  TOOLCHAIN_TAG: TOOLCHAIN_ARMV8
+  TOOLCHAIN_TAG: ARMv8_PLUS_ARMV8
   TZ: Asia/Shanghai
 
 jobs:
@@ -215,7 +215,7 @@ jobs:
         artifacts: ${{ env.TOOLCHAIN_PATH }}
         body: |
           **OpenWrt Toolchain Cache**
-          ### 📒 OpenWrt 工具链
+          ### 📒 OpenWrt ARMv8_PLUS 工具链
           - 源码 Hash: ${{ env.SOURCE_HASH }}
           - 编译时间: ${{ env.TOOLCHAIN_DATE }}
           - 平台: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
