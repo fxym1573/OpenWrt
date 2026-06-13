@@ -71,6 +71,8 @@ svn export https://github.com/Lienol/openwrt-package/tree/main/luci-app-filebrow
 # svn export https://github.com/xiaorouji/openwrt-passwall/trunk/luci-app-passwall package/luci-app-passwall
 # svn export https://github.com/xiaorouji/openwrt-passwall2/trunk/luci-app-passwall2 package/luci-app-passwall2
 svn export https://github.com/vernesong/OpenClash/trunk/luci-app-openclash package/luci-app-openclash
+git_sparse_clone "master" " https://github.com/vernesong/OpenClash.git" "luci-app-ddnsto"
+
 
 # Themes
 git clone https://github.com/sirpdboy/luci-theme-kucat package/luci-theme-kucat
