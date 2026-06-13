@@ -48,7 +48,7 @@ rm -rf feeds/luci/applications/luci-app-qbittorrent-simple
 rm -rf feeds/luci/applications/luci-app-qbittorrent
 
 # 添加额外插件
-git clone https://github.com/sbwml/openwrt-qBittorrent package/qBittorrent
+# git clone https://github.com/sbwml/openwrt-qBittorrent package/qBittorrent
 git clone https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
 git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
 git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
