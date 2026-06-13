@@ -2,6 +2,12 @@ name: ARMv8 Mini OpenWrt
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重新编译固件'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: 0 20 * * *
 
@@ -24,12 +30,14 @@ jobs:
     runs-on: ubuntu-22.04
 
     outputs:
+      SKIP_BUILD: ${{ steps.check-config.outputs.skip_build }}
       COMMIT_AUTHOR: ${{ steps.clone.outputs.COMMIT_AUTHOR }}
       COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
       COMMIT_MESSAGE: ${{ steps.clone.outputs.COMMIT_MESSAGE }}
       COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
       DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
+      CURRENT_CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
 
     steps:
     - name: Checkout
@@ -98,8 +106,34 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
+    - name: Check Config Changes
+      id: check-config
+      run: |
+        # 计算当前配置的哈希值（包括 .config 和 diy 脚本）
+        CURRENT_CONFIG_HASH=$(sha256sum $CONFIG_FILE $DIY_SCRIPT scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
+        echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
+        echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
+
+        # 检查是否强制编译
+        if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
+          echo "强制编译模式：将重新编译固件"
+          echo "skip_build=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # 尝试获取上次发布固件中的配置哈希值
+        PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
+        
+        if [ -n "$PREVIOUS_CONFIG_HASH" ] && [ "$CURRENT_CONFIG_HASH" == "$PREVIOUS_CONFIG_HASH" ]; then
+          echo "配置无变化，将跳过固件编译，直接使用已发布的固件进行打包"
+          echo "skip_build=true" >> $GITHUB_OUTPUT
+        else
+          echo "配置有变化，需要重新编译固件"
+          echo "skip_build=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Cache Toolchain
-      if: env.CACHE_TOOLCHAIN == 'true'
+      if: env.CACHE_TOOLCHAIN == 'true' && steps.check-config.outputs.skip_build == 'false'
       uses: HiGarfield/cachewrtbuild@main
       with:
         ccache: false
@@ -107,12 +141,14 @@ jobs:
         prefix: ${{ env.OPENWRT_PATH }}
 
     - name: Install Feeds
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
     - name: Load Custom Configuration
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
@@ -124,6 +160,7 @@ jobs:
         $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
 
     - name: Download DL Package
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         cd $OPENWRT_PATH
         make defconfig
@@ -133,6 +170,7 @@ jobs:
 
     - name: Compile Firmware
       id: compile
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         cd $OPENWRT_PATH
         mkdir -p files/etc/uci-defaults
@@ -142,6 +180,28 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+    - name: Download Existing Firmware (Skip Build)
+      if: steps.check-config.outputs.skip_build == 'true'
+      run: |
+        mkdir -p openwrt/bin/targets/armvirt/64
+        cd openwrt/bin/targets/armvirt/64
+        
+        # 从 Release 中下载最新的 ROOTFS_MINI 固件
+        DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
+        
+        if [ -z "$DOWNLOAD_URL" ]; then
+          echo "错误: 无法找到已发布的固件下载链接"
+          exit 1
+        fi
+        
+        echo "下载已发布的固件: $DOWNLOAD_URL"
+        wget -q --show-progress "$DOWNLOAD_URL" -O lede-armvirt-64-rootfs.tar.gz
+        
+        # 设置时间变量供后续步骤使用
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Check Space Usage
       if: (!cancelled())
@@ -155,7 +215,7 @@ jobs:
         path: ${{ env.OPENWRT_PATH }}/bin
 
     - name: Organize Files
-      if: steps.compile.outputs.status == 'success'
+      if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
@@ -165,15 +225,28 @@ jobs:
         rm -rf packages feeds.buildinfo version.buildinfo
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
+    - name: Organize Files (Skip Build)
+      if: steps.check-config.outputs.skip_build == 'true'
+      run: |
+        # 为已下载的固件创建必要的目录结构
+        mkdir -p openwrt/bin/targets/armvirt/64/packages
+        cd openwrt/bin/targets/armvirt/64
+        
+        # 创建简单的 sha256sums 文件
+        sha256sum lede-armvirt-64-rootfs.tar.gz > sha256sums
+        cp $GITHUB_WORKSPACE/$CONFIG_FILE build.config
+        
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
     - name: Upload Firmware To Artifact
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true') || (steps.check-config.outputs.skip_build == 'true' && env.FIRMWARE_RELEASE != 'true')
       uses: actions/upload-artifact@main
       with:
         name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
 
     - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true') || (steps.check-config.outputs.skip_build == 'true' && env.FIRMWARE_RELEASE == 'true')
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -184,6 +257,7 @@ jobs:
         body: |
           **This is Temporary Firmware for Armvirt 64**
           ### 📒 固件信息
+          - CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
           - 🚀 成品固件点击此处跳转➦[MINI](https://github.com/fxym1573/OpenWrt/releases/tag/ARMv8_MINI)即可下载
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (精简版临时固件)
           - ⚽ 固件源码: ${{ env.REPO_URL }}
@@ -200,8 +274,10 @@ jobs:
   Package:
     needs: [Build]
     runs-on: ubuntu-22.04
+    if: always() && needs.Build.result == 'success'
 
     env:
+      SKIP_BUILD: ${{ needs.Build.outputs.SKIP_BUILD }}
       COMMIT_AUTHOR: ${{ needs.Build.outputs.COMMIT_AUTHOR }}
       COMMIT_DATE: ${{ needs.Build.outputs.COMMIT_DATE }}
       COMMIT_MESSAGE: ${{ needs.Build.outputs.COMMIT_MESSAGE }}
@@ -217,7 +293,6 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        
         sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
         sudo -E apt-get -y update
         sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
@@ -230,8 +305,23 @@ jobs:
       run: |
         FIRMWARE_PATH=openwrt/bin/targets/armvirt/64
         [ -d $FIRMWARE_PATH ] || mkdir -p $FIRMWARE_PATH
-        cd $FIRMWARE_PATH
-        wget -q $(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" | grep "$FIRMWARE_TAG.*rootfs.tar.gz" | awk -F '"' '{print $4}')
+        
+        if [ "$SKIP_BUILD" == "true" ]; then
+          # 从当前工作流的 Build 任务中获取固件（已在 workspace 中）
+          if [ -f "$GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz" ]; then
+            cp $GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz $FIRMWARE_PATH/
+            echo "使用已存在的固件文件"
+          else
+            # 从 Release 中下载
+            DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
+            cd $FIRMWARE_PATH
+            wget -q "$DOWNLOAD_URL" -O lede-armvirt-64-rootfs.tar.gz
+          fi
+        else
+          # 从编译结果中复制
+          cp $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/lede-armvirt-64-rootfs.tar.gz $FIRMWARE_PATH/
+        fi
+        
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
