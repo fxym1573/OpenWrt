@@ -110,8 +110,7 @@ git_sparse_clone "main" "https://github.com/linkease/nas-packages-luci.git" "luc
 git_sparse_clone "master" "https://github.com/linkease/nas-packages.git" "network/services/ddnsto"
 
 # Alist
-svn export https://github.com/sbwml/luci-app-alist/trunk/luci-app-alist package/luci-app-alist
-svn export https://github.com/sbwml/luci-app-alist/trunk/alist package/alist
+git clone https://github.com/sbwml/luci-app-openlist2 package/openlist
 
 # iStore
 svn export https://github.com/linkease/istore-ui/trunk/app-store-ui package/app-store-ui
