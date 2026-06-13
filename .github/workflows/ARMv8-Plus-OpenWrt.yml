@@ -23,7 +23,7 @@ env:
   FIRMWARE_TAG: ROOTFS_PLUS
   OPENWRT_RELEASE: true
   OPENWRT_TAG: ARMv8_PLUS
-  TOOLCHAIN_TAG: ARMv8_PLUS
+  TOOLCHAIN_TAG: TOOLCHAIN_ARMV8
   TZ: Asia/Shanghai
 
 jobs:
@@ -208,7 +208,7 @@ jobs:
       if: steps.check_toolchain.outputs.rebuild == 'true' && steps.compile.outputs.status == 'success' && env.TOOLCHAIN_PATH != ''
       uses: ncipollo/release-action@v1
       with:
-        name: Toolchain for ${{ env.TOOLCHAIN_TAG }}
+        name: Toolchain for ${{ env.OPENWRT_TAG }}
         allowUpdates: true
         tag: ${{ env.TOOLCHAIN_TAG }}
         token: ${{ secrets.GITHUB_TOKEN }}
