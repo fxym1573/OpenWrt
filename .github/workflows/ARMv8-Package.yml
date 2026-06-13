@@ -79,7 +79,7 @@ jobs:
         WHOAMI: Fxym
         kernel_repo: ophub/kernel
         KERNEL_VERSION_NAME: 6.12.y_6.18.y
-        KERNEL_AUTO_LATEST: false
+        KERNEL_AUTO_LATEST: true
         DISTRIB_REVISION: R${{ env.DATE1 }} by Fxym
 
     - name: Upload OpenWrt To Artifact
