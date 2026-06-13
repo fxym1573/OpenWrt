@@ -132,8 +132,9 @@ jobs:
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
 
+    # ========== 分支1：需要编译时执行 ==========
     - name: Cache Toolchain
-      if: env.CACHE_TOOLCHAIN == 'true' && steps.check-config.outputs.skip_build == 'false'
+      if: steps.check-config.outputs.skip_build == 'false'
       uses: HiGarfield/cachewrtbuild@main
       with:
         ccache: false
@@ -181,8 +182,23 @@ jobs:
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
+    - name: Organize Compiled Files
+      if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        cat sha256sums
+        cp $OPENWRT_PATH/.config build.config
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
+        tar -zcf Packages.tar.gz packages
+        rm -rf packages feeds.buildinfo version.buildinfo
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+    # ========== 分支2：跳过编译时执行 ==========
     - name: Download Existing Firmware (Skip Build)
       if: steps.check-config.outputs.skip_build == 'true'
+      id: download-existing
       run: |
         mkdir -p openwrt/bin/targets/armvirt/64
         cd openwrt/bin/targets/armvirt/64
@@ -198,7 +214,10 @@ jobs:
         echo "下载已发布的固件: $DOWNLOAD_URL"
         wget -q --show-progress "$DOWNLOAD_URL" -O lede-armvirt-64-rootfs.tar.gz
         
-        # 设置时间变量供后续步骤使用
+        # 创建 sha256sums 文件
+        sha256sum lede-armvirt-64-rootfs.tar.gz > sha256sums
+        
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
@@ -214,39 +233,15 @@ jobs:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
 
-    - name: Organize Files
-      if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-
-    - name: Organize Files (Skip Build)
-      if: steps.check-config.outputs.skip_build == 'true'
-      run: |
-        # 为已下载的固件创建必要的目录结构
-        mkdir -p openwrt/bin/targets/armvirt/64/packages
-        cd openwrt/bin/targets/armvirt/64
-        
-        # 创建简单的 sha256sums 文件
-        sha256sum lede-armvirt-64-rootfs.tar.gz > sha256sums
-        cp $GITHUB_WORKSPACE/$CONFIG_FILE build.config
-        
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-
     - name: Upload Firmware To Artifact
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true') || (steps.check-config.outputs.skip_build == 'true' && env.FIRMWARE_RELEASE != 'true')
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true') || (steps.check-config.outputs.skip_build == 'true' && steps.download-existing.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true')
       uses: actions/upload-artifact@main
       with:
         name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
 
     - name: Upload Firmware To Release
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true') || (steps.check-config.outputs.skip_build == 'true' && env.FIRMWARE_RELEASE == 'true')
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true') || (steps.check-config.outputs.skip_build == 'true' && steps.download-existing.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true')
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -307,7 +302,7 @@ jobs:
         [ -d $FIRMWARE_PATH ] || mkdir -p $FIRMWARE_PATH
         
         if [ "$SKIP_BUILD" == "true" ]; then
-          # 从当前工作流的 Build 任务中获取固件（已在 workspace 中）
+          # 从当前 Build 任务的工作空间获取固件（已在 workspace 中）
           if [ -f "$GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz" ]; then
             cp $GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz $FIRMWARE_PATH/
             echo "使用已存在的固件文件"
