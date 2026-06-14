@@ -202,10 +202,11 @@ jobs:
       if: steps.check-config.outputs.skip_build == 'true'
       id: download-existing
       run: |
-        mkdir -p openwrt/bin/targets/armvirt/64
-        cd openwrt/bin/targets/armvirt/64
+        # 使用动态路径，匹配实际设备目标
+        mkdir -p openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}
+        cd openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}
         
-        # 从 Release 中下载最新的 ROOTFS_MINI 固件
+        # 从 Release 中下载最新的固件（使用通配符匹配）
         DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
         
         if [ -z "$DOWNLOAD_URL" ]; then
@@ -214,10 +215,10 @@ jobs:
         fi
         
         echo "下载已发布的固件: $DOWNLOAD_URL"
-        wget -q --show-progress "$DOWNLOAD_URL" -O lede-armvirt-64-rootfs.tar.gz
+        wget -q --show-progress "$DOWNLOAD_URL"
         
         # 创建 sha256sums 文件
-        sha256sum lede-armvirt-64-rootfs.tar.gz > sha256sums
+        sha256sum *.tar.gz > sha256sums
         
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
@@ -281,6 +282,12 @@ jobs:
       COMMIT_HASH: ${{ needs.Build.outputs.COMMIT_HASH }}
       DEVICE_TARGET: ${{ needs.Build.outputs.DEVICE_TARGET }}
       DEVICE_SUBTARGET: ${{ needs.Build.outputs.DEVICE_SUBTARGET }}
+      FIRMWARE_TAG: ROOTFS_MINI
+      OPENWRT_RELEASE: true
+      OPENWRT_TAG: ARMv8_MINI
+      TZ: Asia/Shanghai
+      REPO_URL: https://github.com/coolsnowwolf/lede
+      REPO_BRANCH: master
 
     steps:
     - name: Checkout
@@ -298,37 +305,79 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
+    # ========== 修复：Download Armvirt Firmware 步骤 ==========
     - name: Download Armvirt Firmware
       id: download
       run: |
-        FIRMWARE_PATH=openwrt/bin/targets/armvirt/64
-        [ -d $FIRMWARE_PATH ] || mkdir -p $FIRMWARE_PATH
+        # 使用动态路径，匹配实际的设备目标
+        FIRMWARE_PATH="openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
+        mkdir -p $FIRMWARE_PATH
+        
+        echo "设备目标: ${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
+        echo "固件路径: $FIRMWARE_PATH"
+        echo "跳过编译: $SKIP_BUILD"
         
         if [ "$SKIP_BUILD" == "true" ]; then
-          # 从当前 Build 任务的工作空间获取固件（已在 workspace 中）
-          if [ -f "$GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz" ]; then
-            cp $GITHUB_WORKSPACE/openwrt/bin/targets/armvirt/64/lede-armvirt-64-rootfs.tar.gz $FIRMWARE_PATH/
-            echo "使用已存在的固件文件"
-          else
-            # 从 Release 中下载
-            DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
-            cd $FIRMWARE_PATH
-            wget -q "$DOWNLOAD_URL" -O lede-armvirt-64-rootfs.tar.gz
+          # 跳过编译时：从 Release 下载固件
+          cd $FIRMWARE_PATH
+          
+          # 从 Release 中下载最新的 rootfs 固件
+          DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
+          
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "错误: 无法找到已发布的固件下载链接 (tag: $FIRMWARE_TAG)"
+            exit 1
           fi
+          
+          echo "下载固件: $DOWNLOAD_URL"
+          wget -q --show-progress "$DOWNLOAD_URL"
+          echo "下载完成，文件列表:"
+          ls -la *.tar.gz
         else
-          # 从编译结果中复制
-          cp $GITHUB_WORKSPACE/openwrt/bin/targets/*/*/lede-armvirt-64-rootfs.tar.gz $FIRMWARE_PATH/
+          # 需要编译时：从 Build job 的工作空间复制固件
+          echo "查找编译产物..."
+          
+          # 查找实际的 rootfs 文件
+          SOURCE_FILE=$(find $GITHUB_WORKSPACE/openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET} -name "*rootfs.tar.gz" -type f 2>/dev/null | head -1)
+          
+          if [ -z "$SOURCE_FILE" ]; then
+            # 如果没找到，尝试更宽泛的搜索
+            SOURCE_FILE=$(find $GITHUB_WORKSPACE/openwrt/bin/targets -name "*rootfs.tar.gz" -type f 2>/dev/null | head -1)
+          fi
+          
+          if [ -n "$SOURCE_FILE" ]; then
+            echo "找到固件文件: $SOURCE_FILE"
+            cp "$SOURCE_FILE" $FIRMWARE_PATH/
+            echo "已复制到: $FIRMWARE_PATH/"
+            ls -la $FIRMWARE_PATH/*.tar.gz
+          else
+            echo "错误: 未找到 rootfs.tar.gz 编译产物"
+            echo "搜索路径: $GITHUB_WORKSPACE/openwrt/bin/targets/"
+            find $GITHUB_WORKSPACE/openwrt/bin/targets -type f -name "*.gz" 2>/dev/null || echo "未找到任何文件"
+            exit 1
+          fi
         fi
+        
+        # 验证固件文件存在
+        cd $FIRMWARE_PATH
+        if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
+          echo "错误: 固件文件不存在"
+          exit 1
+        fi
+        
+        echo "固件准备完成:"
+        ls -la *.tar.gz
         
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
     - name: Package OpenWrt Firmware
       if: steps.download.outputs.status == 'success'
       uses: ophub/flippy-openwrt-actions@main
       env:
-        OPENWRT_ARMVIRT: openwrt/bin/targets/*/*/*rootfs.tar.gz
+        OPENWRT_ARMVIRT: ${{ env.FIRMWARE_PATH }}/*rootfs.tar.gz
         PACKAGE_SOC: l1pro_qemu
         WHOAMI: Fxym
         KERNEL_REPO_URL: "ophub/kernel"
