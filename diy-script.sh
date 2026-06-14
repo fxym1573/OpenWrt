@@ -6,11 +6,7 @@
 # Author: P3TERX
 # Blog: https://p3terx.com
 #===============================================
-#添加软件源
-#sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
-#sed -i '$a src-git small https://github.com/kenzok8/small' feeds.conf.default
-#sed -i '$a src-git haibo https://github.com/haiibo/openwrt-packages' feeds.conf.default
-#sed -i '$a src-git kiddin9 https://github.com/kiddin9/openwrt-packages' feeds.conf.default
+
 
 # 修改默认IP
  sed -i 's/192.168.1.1/192.168.0.254/g' package/base-files/files/bin/config_generate
@@ -32,26 +28,26 @@ function git_sparse_clone() {
 }
 
 # 移除要替换的包
-rm -rf feeds/packages/net/mosdns
-rm -rf feeds/packages/net/msd_lite
-rm -rf feeds/packages/net/smartdns
-rm -rf feeds/luci/themes/luci-theme-argon
-rm -rf feeds/luci/themes/luci-theme-netgear
+# rm -rf feeds/packages/net/mosdns
+# rm -rf feeds/packages/net/msd_lite
+# rm -rf feeds/packages/net/smartdns
+# rm -rf feeds/luci/themes/luci-theme-argon
+# rm -rf feeds/luci/themes/luci-theme-netgear
 # rm -rf feeds/luci/applications/luci-app-dockerman
-rm -rf feeds/luci/applications/luci-app-mosdns
-rm -rf feeds/luci/applications/luci-app-netdata
-rm -rf feeds/luci/applications/luci-app-serverchan
-rm -rf feeds/luci/applications/luci-app-vlmcsd
-rm -rf feeds/luci/applications/luci-app-vsftpd
-rm -rf feeds/luci/applications/luci-app-accesscontrol
-rm -rf feeds/luci/applications/luci-app-qbittorrent-simple
-rm -rf feeds/luci/applications/luci-app-qbittorrent
+# rm -rf feeds/luci/applications/luci-app-mosdns
+# rm -rf feeds/luci/applications/luci-app-netdata
+# rm -rf feeds/luci/applications/luci-app-serverchan
+# rm -rf feeds/luci/applications/luci-app-vlmcsd
+# rm -rf feeds/luci/applications/luci-app-vsftpd
+# rm -rf feeds/luci/applications/luci-app-accesscontrol
+# rm -rf feeds/luci/applications/luci-app-qbittorrent-simple
+# rm -rf feeds/luci/applications/luci-app-qbittorrent
 
 # 添加额外插件
 # git clone https://github.com/sbwml/openwrt-qBittorrent package/qBittorrent
-git clone https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
-git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
-git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
+# git clone https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
+# git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
+# git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
 
 # git_sparse_clone "main" " https://github.com/Lienol/openwrt-package.git" "luci-app-filebrowser"
 
@@ -63,15 +59,15 @@ git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFil
 
 
 # Themes
-git clone https://github.com/sirpdboy/luci-theme-kucat package/luci-theme-kucat
-git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/luci-theme-edge
-git clone --depth=1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
-git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
-git clone --depth=1 https://github.com/xiaoqingfengATGH/luci-theme-infinityfreedom package/luci-theme-infinityfreedom
+# git clone https://github.com/sirpdboy/luci-theme-kucat package/luci-theme-kucat
+# git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/luci-theme-edge
+# git clone --depth=1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
+# git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
+# git clone --depth=1 https://github.com/xiaoqingfengATGH/luci-theme-infinityfreedom package/luci-theme-infinityfreedom
 
 
 # 更改 Argon 主题背景
-cp -f $GITHUB_WORKSPACE/images/bg3.jpg package/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
+# cp -f $GITHUB_WORKSPACE/images/bg3.jpg package/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
 
 # 晶晨宝盒
 # git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
@@ -96,7 +92,7 @@ cp -f $GITHUB_WORKSPACE/images/bg3.jpg package/luci-theme-argon/htdocs/luci-stat
 # git_sparse_clone "master" "https://github.com/linkease/nas-packages.git" "network/services/ddnsto"
 
 # Alist
-git clone https://github.com/sbwml/luci-app-openlist2 package/openlist
+# git clone https://github.com/sbwml/luci-app-openlist2 package/openlist
 
 
 # 在线用户
@@ -106,7 +102,7 @@ git clone https://github.com/sbwml/luci-app-openlist2 package/openlist
 # chmod 755 package/luci-app-onliner/root/usr/share/onliner/setnlbw.sh
 
 # x86 型号只显示 CPU 型号
-sed -i 's/${g}.*/${a}${b}${c}${d}${e}${f}${hydrid}/g' package/lean/autocore/files/x86/autocore
+# sed -i 's/${g}.*/${a}${b}${c}${d}${e}${f}${hydrid}/g' package/lean/autocore/files/x86/autocore
 
 # 修改本地时间格式
 sed -i 's/os.date()/os.date("%a %Y-%m-%d %H:%M:%S")/g' package/lean/autocore/files/*/index.htm
