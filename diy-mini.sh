@@ -37,3 +37,21 @@ git_sparse_clone master https://github.com/vernesong/OpenClash.git package/luci-
 # git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/luci-theme-edge
 # git clone --depth=1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
 # git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
+
+# 晶晨宝盒
+git_sparse_clone main https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
+sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/fxym1573/OpenWrt'|g" package/luci-app-amlogic/root/etc/config/amlogic
+sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" package/l
+
+
+# 修改本地时间格式
+sed -i 's/os.date()/os.date("%a %Y-%m-%d %H:%M:%S")/g' package/lean/autocore/files/*/index.htm
+
+# 修改版本为编译日期
+date_version=$(date +"%y.%m.%d")
+orig_version=$(cat "package/lean/default-settings/files/zzz-default-settings" | grep DISTRIB_REVISION= | awk -F "'" '{print $2}')
+sed -i "s/${orig_version}/R${date_version} by Haiibo/g" package/lean/default-settings/files/zzz-default-settings
+
+
+./scripts/feeds update -a
+./scripts/feeds install -a
