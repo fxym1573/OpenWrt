@@ -111,7 +111,10 @@ jobs:
       id: check-config
       run: |
         # 计算当前配置的哈希值（包括 .config 和 diy 脚本）
-        CURRENT_CONFIG_HASH=$(sha256sum $CONFIG_FILE $DIY_SCRIPT scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
+        # 注意：需要先执行 make defconfig 来生成完整的 .config
+        cd $OPENWRT_PATH
+        make defconfig > /dev/null 2>&1
+        CURRENT_CONFIG_HASH=$(sha256sum .config $GITHUB_WORKSPACE/$DIY_SCRIPT $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
 
@@ -123,7 +126,7 @@ jobs:
         fi
 
         # 尝试获取上次发布固件中的配置哈希值
-        PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
+        PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
         
         if [ -n "$PREVIOUS_CONFIG_HASH" ] && [ "$CURRENT_CONFIG_HASH" == "$PREVIOUS_CONFIG_HASH" ]; then
           echo "配置无变化，将跳过固件编译，直接使用已发布的固件进行打包"
@@ -190,61 +193,43 @@ jobs:
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
+        # 创建 packages 目录（如果不存在）
+        mkdir -p packages
+        # 复制 ipk 文件（如果存在）
+        if [ -d "$OPENWRT_PATH/bin/packages" ]; then
+          find $OPENWRT_PATH/bin/packages -name "*.ipk" -exec cp {} packages/ \; 2>/dev/null || true
+        fi
         tar -zcf Packages.tar.gz packages
         rm -rf packages feeds.buildinfo version.buildinfo
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    # ========== 分支2：跳过编译时执行 ==========
-    - name: Download Existing Firmware (Skip Build)
-      if: steps.check-config.outputs.skip_build == 'true'
-      id: download-existing
-      run: |
-        # 使用动态路径，匹配实际设备目标
-        mkdir -p openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}
-        cd openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}
-        
-        # 从 Release 中下载最新的固件（使用通配符匹配）
-        DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
-        
-        if [ -z "$DOWNLOAD_URL" ]; then
-          echo "错误: 无法找到已发布的固件下载链接"
-          exit 1
-        fi
-        
-        echo "下载已发布的固件: $DOWNLOAD_URL"
-        wget -q --show-progress "$DOWNLOAD_URL"
-        
-        # 创建 sha256sums 文件
-        sha256sum *.tar.gz > sha256sums
-        
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+    # ========== 关键修复：上传编译产物供后续 job 使用 ==========
+    - name: Upload Build Artifacts for Package Job
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success') || (steps.check-config.outputs.skip_build == 'true')
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        path: |
+          ${{ env.FIRMWARE_PATH }}/*.tar.gz
+          ${{ env.FIRMWACE_PATH }}/build.config
+        retention-days: 1
+        if-no-files-found: warn
 
     - name: Check Space Usage
       if: (!cancelled())
       run: df -hT
 
-    - name: Upload Bin Directory
+    - name: Upload Bin Directory (Optional)
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
 
-    - name: Upload Firmware To Artifact
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true') || (steps.check-config.outputs.skip_build == 'true' && steps.download-existing.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true')
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
-
     - name: Upload Firmware To Release
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true') || (steps.check-config.outputs.skip_build == 'true' && steps.download-existing.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true')
+      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true')
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -305,64 +290,40 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
-    # ========== 修复：Download Armvirt Firmware 步骤 ==========
-    - name: Download Armvirt Firmware
-      id: download
+    # ========== 关键修复：从 Build job 下载编译产物 ==========
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        path: openwrt/bin/targets/${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}/
+
+    - name: Prepare Firmware
+      id: prepare
       run: |
-        # 使用动态路径，匹配实际的设备目标
-        FIRMWARE_PATH="openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
-        mkdir -p $FIRMWARE_PATH
+        FIRMWARE_DIR="openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
         
         echo "设备目标: ${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
-        echo "固件路径: $FIRMWARE_PATH"
+        echo "固件路径: $FIRMWARE_DIR"
         echo "跳过编译: $SKIP_BUILD"
         
-        if [ "$SKIP_BUILD" == "true" ]; then
-          # 跳过编译时：从 Release 下载固件
-          cd $FIRMWARE_PATH
-          
-          # 从 Release 中下载最新的 rootfs 固件
-          DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
-          
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "错误: 无法找到已发布的固件下载链接 (tag: $FIRMWARE_TAG)"
-            exit 1
-          fi
-          
-          echo "下载固件: $DOWNLOAD_URL"
-          wget -q --show-progress "$DOWNLOAD_URL"
-          echo "下载完成，文件列表:"
-          ls -la *.tar.gz
-        else
-          # 需要编译时：从 Build job 的工作空间复制固件
-          echo "查找编译产物..."
-          
-          # 查找实际的 rootfs 文件
-          SOURCE_FILE=$(find $GITHUB_WORKSPACE/openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET} -name "*rootfs.tar.gz" -type f 2>/dev/null | head -1)
-          
-          if [ -z "$SOURCE_FILE" ]; then
-            # 如果没找到，尝试更宽泛的搜索
-            SOURCE_FILE=$(find $GITHUB_WORKSPACE/openwrt/bin/targets -name "*rootfs.tar.gz" -type f 2>/dev/null | head -1)
-          fi
-          
-          if [ -n "$SOURCE_FILE" ]; then
-            echo "找到固件文件: $SOURCE_FILE"
-            cp "$SOURCE_FILE" $FIRMWARE_PATH/
-            echo "已复制到: $FIRMWARE_PATH/"
-            ls -la $FIRMWARE_PATH/*.tar.gz
-          else
-            echo "错误: 未找到 rootfs.tar.gz 编译产物"
-            echo "搜索路径: $GITHUB_WORKSPACE/openwrt/bin/targets/"
-            find $GITHUB_WORKSPACE/openwrt/bin/targets -type f -name "*.gz" 2>/dev/null || echo "未找到任何文件"
-            exit 1
-          fi
-        fi
-        
-        # 验证固件文件存在
-        cd $FIRMWARE_PATH
+        # 检查下载的固件是否存在
+        cd $FIRMWARE_DIR
         if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
-          echo "错误: 固件文件不存在"
-          exit 1
+          echo "警告: 下载的 artifacts 中没有找到 tar.gz 文件"
+          echo "当前目录内容:"
+          ls -la
+          
+          # 如果没找到，尝试从 Release 下载
+          echo "尝试从 Release 下载固件..."
+          DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
+          
+          if [ -n "$DOWNLOAD_URL" ]; then
+            echo "下载固件: $DOWNLOAD_URL"
+            wget -q --show-progress "$DOWNLOAD_URL"
+          else
+            echo "错误: 无法找到固件文件"
+            exit 1
+          fi
         fi
         
         echo "固件准备完成:"
@@ -374,7 +335,7 @@ jobs:
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
     - name: Package OpenWrt Firmware
-      if: steps.download.outputs.status == 'success'
+      if: steps.prepare.outputs.status == 'success'
       uses: ophub/flippy-openwrt-actions@main
       env:
         OPENWRT_ARMVIRT: ${{ env.FIRMWARE_PATH }}/*rootfs.tar.gz
