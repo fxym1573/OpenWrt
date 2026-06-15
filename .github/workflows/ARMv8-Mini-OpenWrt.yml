@@ -110,29 +110,71 @@ jobs:
     - name: Check Config Changes
       id: check-config
       run: |
-        # 计算当前配置的哈希值（包括 .config 和 diy 脚本）
-        # 注意：需要先执行 make defconfig 来生成完整的 .config
-        cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
-        CURRENT_CONFIG_HASH=$(sha256sum .config $GITHUB_WORKSPACE/$DIY_SCRIPT $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
+        # 计算源配置文件的哈希值（而不是生成的 .config）
+        
+        # 计算 configs/armv8-mini.config 的哈希
+        CONFIG_HASH=$(sha256sum $GITHUB_WORKSPACE/$CONFIG_FILE | awk '{print $1}')
+        echo "📄 源配置文件 ($CONFIG_FILE) 哈希: $CONFIG_HASH"
+        
+        # 计算 diy-mini.sh 脚本的哈希
+        DIY_HASH=$(sha256sum $GITHUB_WORKSPACE/$DIY_SCRIPT | awk '{print $1}')
+        echo "🔧 diy 脚本 ($DIY_SCRIPT) 哈希: $DIY_HASH"
+        
+        # 计算所有辅助脚本的哈希（可选）
+        if [ -d "$GITHUB_WORKSPACE/scripts" ]; then
+          SCRIPTS_HASH=$(sha256sum $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
+          echo "📁 scripts 目录脚本哈希: $SCRIPTS_HASH"
+        else
+          SCRIPTS_HASH="none"
+          echo "📁 scripts 目录不存在"
+        fi
+        
+        # 计算总配置哈希（用于判断是否需要重新编译）
+        # 主要基于源配置文件和 diy 脚本
+        CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}" | sha256sum | awk '{print $1}')
+        echo "🔐 总配置哈希 (基于源配置+diy脚本): $CURRENT_CONFIG_HASH"
+        
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
+        
+        # 单独保存各个哈希值，便于调试
+        echo "CONFIG_HASH=$CONFIG_HASH" >> $GITHUB_ENV
+        echo "DIY_HASH=$DIY_HASH" >> $GITHUB_ENV
+        echo "SCRIPTS_HASH=$SCRIPTS_HASH" >> $GITHUB_ENV
 
         # 检查是否强制编译
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
-          echo "强制编译模式：将重新编译固件"
+          echo "⚠️ 强制编译模式：将重新编译固件"
           echo "skip_build=false" >> $GITHUB_OUTPUT
           exit 0
         fi
 
         # 尝试获取上次发布固件中的配置哈希值
+        # 注意：这里使用正确的 tag 名称
         PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
         
+        echo "📊 上次编译总配置哈希: $PREVIOUS_CONFIG_HASH"
+        echo "📊 本次总配置哈希: $CURRENT_CONFIG_HASH"
+        
         if [ -n "$PREVIOUS_CONFIG_HASH" ] && [ "$CURRENT_CONFIG_HASH" == "$PREVIOUS_CONFIG_HASH" ]; then
-          echo "配置无变化，将跳过固件编译，直接使用已发布的固件进行打包"
+          echo "✅ 配置无变化，将跳过固件编译，直接使用已发布的固件进行打包"
           echo "skip_build=true" >> $GITHUB_OUTPUT
         else
-          echo "配置有变化，需要重新编译固件"
+          echo "🔄 配置有变化，需要重新编译固件"
+          if [ "$PREVIOUS_CONFIG_HASH" == "none" ]; then
+            echo "   原因: 未找到上次编译记录 (首次编译)"
+          else
+            echo "   原因: 配置哈希不一致"
+            echo "   本次哈希: $CURRENT_CONFIG_HASH"
+            echo "   上次哈希: $PREVIOUS_CONFIG_HASH"
+            # 显示具体哪个文件发生了变化
+            if [ "$CONFIG_HASH" != "$(echo $PREVIOUS_CONFIG_HASH | cut -c1-64)" ]; then
+              echo "   📄 源配置文件 ($CONFIG_FILE) 已更改"
+            fi
+            if [ "$DIY_HASH" != "$(echo $PREVIOUS_CONFIG_HASH | cut -c65-128)" ]; then
+              echo "   🔧 diy 脚本 ($DIY_SCRIPT) 已更改"
+            fi
+          fi
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
 
@@ -205,7 +247,7 @@ jobs:
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    # ========== 关键修复：上传编译产物供后续 job 使用 ==========
+    # ========== 上传编译产物供后续 job 使用 ==========
     - name: Upload Build Artifacts for Package Job
       if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success') || (steps.check-config.outputs.skip_build == 'true')
       uses: actions/upload-artifact@v4
@@ -213,7 +255,7 @@ jobs:
         name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
         path: |
           ${{ env.FIRMWARE_PATH }}/*.tar.gz
-          ${{ env.FIRMWACE_PATH }}/build.config
+          ${{ env.FIRMWARE_PATH }}/build.config
         retention-days: 1
         if-no-files-found: warn
 
@@ -241,6 +283,9 @@ jobs:
           **This is Temporary Firmware for Armvirt 64**
           ### 📒 固件信息
           - CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
+          - 📄 源配置 (${{ env.CONFIG_FILE }}) 哈希: ${{ env.CONFIG_HASH }}
+          - 🔧 diy 脚本 (${{ env.DIY_SCRIPT }}) 哈希: ${{ env.DIY_HASH }}
+          - 📁 scripts 哈希: ${{ env.SCRIPTS_HASH }}
           - 🚀 成品固件点击此处跳转➦[MINI](https://github.com/fxym1573/OpenWrt/releases/tag/ARMv8_MINI)即可下载
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (精简版临时固件)
           - ⚽ 固件源码: ${{ env.REPO_URL }}
@@ -290,7 +335,7 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
-    # ========== 关键修复：从 Build job 下载编译产物 ==========
+    # ========== 从 Build job 下载编译产物 ==========
     - name: Download Build Artifacts
       uses: actions/download-artifact@v4
       with:
