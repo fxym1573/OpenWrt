@@ -121,8 +121,9 @@ jobs:
         
         # 计算 lede 源码目录的哈希（所有文件的整体哈希）
         if [ -d "$OPENWRT_PATH" ]; then
-          LEDE_HASH=$(find $OPENWRT_PATH -type f -exec sha256sum {} \; | sha256sum | awk '{print $1}')
-          echo "📁 lede 源码哈希: $LEDE_HASH"
+           cd $OPENWRT_PATH
+          LEDE_HASH=$(git rev-parse HEAD)
+          echo "📁 lede 源码 Commit Hash: $LEDE_HASH"
         else
           LEDE_HASH="none"
           echo "📁 lede 源码目录不存在"
@@ -135,10 +136,6 @@ jobs:
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
         
-        # 单独保存各个哈希值，便于调试
-        echo "CONFIG_HASH=$CONFIG_HASH" >> $GITHUB_ENV
-        echo "DIY_HASH=$DIY_HASH" >> $GITHUB_ENV
-        echo "LEDE_HASH=$LEDE_HASH" >> $GITHUB_ENV
 
         # 检查是否强制编译
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
@@ -274,9 +271,6 @@ jobs:
           **This is Temporary Firmware for Armvirt 64**
           ### 📒 固件信息
           - CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
-          - 📄 源配置 (${{ env.CONFIG_FILE }}) 哈希: ${{ env.CONFIG_HASH }}
-          - 🔧 diy 脚本 (${{ env.DIY_SCRIPT }}) 哈希: ${{ env.DIY_HASH }}
-          - 📁 lede 源码哈希: ${{ env.LEDE_HASH }}
           - 🚀 成品固件点击此处跳转➦[MINI](https://github.com/fxym1573/OpenWrt/releases/tag/ARMv8_MINI)即可下载
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (精简版临时固件)
           - ⚽ 固件源码: ${{ env.REPO_URL }}
