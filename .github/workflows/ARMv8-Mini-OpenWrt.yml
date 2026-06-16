@@ -57,7 +57,9 @@ jobs:
         echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
         echo "--------------------------硬盘信息--------------------------"
         echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
-    # ========== 修改后的 Check Config Changes 步骤 ==========
+
+    # ========== 提前检测配置变化（无需克隆 Lede 源码） ==========
+    # 放在 Initialization Environment 之前，以便快速跳过无变化的情况
     - name: Check Config Changes
       id: check-config
       run: |
@@ -69,23 +71,21 @@ jobs:
         DIY_HASH=$(sha256sum $GITHUB_WORKSPACE/$DIY_SCRIPT | awk '{print $1}')
         echo "🔧 diy 脚本 ($DIY_SCRIPT) 哈希: $DIY_HASH"
         
-        # 计算 lede 源码目录的哈希（所有文件的整体哈希）
-        if [ -d "$OPENWRT_PATH" ]; then
-           cd $OPENWRT_PATH
-          LEDE_HASH=$(git rev-parse HEAD)
-          echo "📁 lede 源码 Commit Hash: $LEDE_HASH"
-        else
+        # 通过 git ls-remote 获取远程源码的 commit hash（无需克隆）
+        LEDE_HASH=$(git ls-remote $REPO_URL $REPO_BRANCH | awk '{print $1}')
+        if [ -z "$LEDE_HASH" ]; then
           LEDE_HASH="none"
-          echo "📁 lede 源码目录不存在"
+          echo "⚠️ 无法获取远程源码 commit hash"
+        else
+          echo "📁 远程 lede 源码 Commit Hash: $LEDE_HASH"
         fi
         
         # 计算总配置哈希（用于判断是否需要重新编译）
         CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${LEDE_HASH}" | sha256sum | awk '{print $1}')
-        echo "🔐 总配置哈希 (基于源配置+diy脚本+lede源码): $CURRENT_CONFIG_HASH"
+        echo "🔐 总配置哈希 (基于源配置+diy脚本+远程lede源码): $CURRENT_CONFIG_HASH"
         
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
-        
 
         # 检查是否强制编译
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
@@ -94,7 +94,7 @@ jobs:
           exit 0
         fi
 
-        # 尝试获取上次发布固件中的配置哈希值
+        # 尝试获取上次发布固件中的总配置哈希值
         PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
         
         echo "📊 上次编译总配置哈希: $PREVIOUS_CONFIG_HASH"
@@ -111,11 +111,13 @@ jobs:
             echo "   原因: 配置哈希不一致"
             echo "   本次哈希: $CURRENT_CONFIG_HASH"
             echo "   上次哈希: $PREVIOUS_CONFIG_HASH"
-            # 注：不再尝试细分哪个子文件变化，因上次记录中未单独存储
           fi
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
+
+    # ========== 以下步骤仅在需要编译时执行 ==========
     - name: Initialization Environment
+      if: steps.check-config.outputs.skip_build == 'false'   # 只在需要编译时执行
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -131,6 +133,7 @@ jobs:
 
     - name: Clone Source Code
       id: clone
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         df -hT $GITHUB_WORKSPACE
         git clone $REPO_URL -b $REPO_BRANCH openwrt
@@ -151,6 +154,7 @@ jobs:
 
     - name: Generate Variables
       id: variable
+      if: steps.check-config.outputs.skip_build == 'false'
       run: |
         cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
@@ -163,7 +167,8 @@ jobs:
         DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
-    # ========== 分支1：需要编译时执行 ==========
+
+    # ========== 编译相关步骤（已有条件，无需改动） ==========
     - name: Cache Toolchain
       if: steps.check-config.outputs.skip_build == 'false'
       uses: HiGarfield/cachewrtbuild@main
@@ -219,9 +224,7 @@ jobs:
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        # 创建 packages 目录（如果不存在）
         mkdir -p packages
-        # 复制 ipk 文件（如果存在）
         if [ -d "$OPENWRT_PATH/bin/packages" ]; then
           find $OPENWRT_PATH/bin/packages -name "*.ipk" -exec cp {} packages/ \; 2>/dev/null || true
         fi
@@ -231,9 +234,9 @@ jobs:
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    # ========== 上传编译产物供后续 job 使用 ==========
+    # ========== 上传编译产物（仅当编译成功时） ==========
     - name: Upload Build Artifacts for Package Job
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success') || (steps.check-config.outputs.skip_build == 'true')
+      if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
@@ -241,7 +244,7 @@ jobs:
           ${{ env.FIRMWARE_PATH }}/*.tar.gz
           ${{ env.FIRMWARE_PATH }}/build.config
         retention-days: 1
-        if-no-files-found: warn
+        if-no-files-found: error
 
     - name: Check Space Usage
       if: (!cancelled())
@@ -254,9 +257,9 @@ jobs:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
 
-    # ========== 修改 Release Body 中的哈希信息 ==========
+    # ========== 上传临时固件到 Release（仅编译成功时） ==========
     - name: Upload Firmware To Release
-      if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true')
+      if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
       uses: ncipollo/release-action@v1
       with:
         name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
@@ -317,12 +320,13 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
-    # ========== 从 Build job 下载编译产物 ==========
+    # ========== 下载编译产物（可能不存在，若跳过编译则从 Release 获取） ==========
     - name: Download Build Artifacts
       uses: actions/download-artifact@v4
       with:
         name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
         path: openwrt/bin/targets/${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}/
+      continue-on-error: true
 
     - name: Prepare Firmware
       id: prepare
@@ -333,22 +337,16 @@ jobs:
         echo "固件路径: $FIRMWARE_DIR"
         echo "跳过编译: $SKIP_BUILD"
         
-        # 检查下载的固件是否存在
         cd $FIRMWARE_DIR
+        # 如果 artifact 中没有 tar.gz，尝试从 Release 下载
         if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
-          echo "警告: 下载的 artifacts 中没有找到 tar.gz 文件"
-          echo "当前目录内容:"
-          ls -la
-          
-          # 如果没找到，尝试从 Release 下载
-          echo "尝试从 Release 下载固件..."
+          echo "警告: 下载的 artifacts 中没有找到 tar.gz 文件，尝试从 Release 下载..."
           DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
-          
           if [ -n "$DOWNLOAD_URL" ]; then
             echo "下载固件: $DOWNLOAD_URL"
             wget -q --show-progress "$DOWNLOAD_URL"
           else
-            echo "错误: 无法找到固件文件"
+            echo "错误: 无法找到固件文件，请确保已经成功编译过至少一次。"
             exit 1
           fi
         fi
