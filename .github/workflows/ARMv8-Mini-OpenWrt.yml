@@ -107,32 +107,30 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
+    # ========== 修改后的 Check Config Changes 步骤 ==========
     - name: Check Config Changes
       id: check-config
       run: |
-        # 计算源配置文件的哈希值（而不是生成的 .config）
-        
-        # 计算 configs/armv8-mini.config 的哈希
+        # 计算源配置文件的哈希值
         CONFIG_HASH=$(sha256sum $GITHUB_WORKSPACE/$CONFIG_FILE | awk '{print $1}')
         echo "📄 源配置文件 ($CONFIG_FILE) 哈希: $CONFIG_HASH"
         
-        # 计算 diy-mini.sh 脚本的哈希
+        # 计算 diy 脚本的哈希
         DIY_HASH=$(sha256sum $GITHUB_WORKSPACE/$DIY_SCRIPT | awk '{print $1}')
         echo "🔧 diy 脚本 ($DIY_SCRIPT) 哈希: $DIY_HASH"
         
-        # 计算所有辅助脚本的哈希（可选）
-        if [ -d "$GITHUB_WORKSPACE/scripts" ]; then
-          SCRIPTS_HASH=$(sha256sum $GITHUB_WORKSPACE/scripts/*.sh 2>/dev/null | sha256sum | awk '{print $1}')
-          echo "📁 scripts 目录脚本哈希: $SCRIPTS_HASH"
+        # 计算 lede 源码目录的哈希（所有文件的整体哈希）
+        if [ -d "$OPENWRT_PATH" ]; then
+          LEDE_HASH=$(find $OPENWRT_PATH -type f -exec sha256sum {} \; | sha256sum | awk '{print $1}')
+          echo "📁 lede 源码哈希: $LEDE_HASH"
         else
-          SCRIPTS_HASH="none"
-          echo "📁 scripts 目录不存在"
+          LEDE_HASH="none"
+          echo "📁 lede 源码目录不存在"
         fi
         
         # 计算总配置哈希（用于判断是否需要重新编译）
-        # 主要基于源配置文件和 diy 脚本
-        CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}" | sha256sum | awk '{print $1}')
-        echo "🔐 总配置哈希 (基于源配置+diy脚本): $CURRENT_CONFIG_HASH"
+        CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${LEDE_HASH}" | sha256sum | awk '{print $1}')
+        echo "🔐 总配置哈希 (基于源配置+diy脚本+lede源码): $CURRENT_CONFIG_HASH"
         
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
@@ -140,7 +138,7 @@ jobs:
         # 单独保存各个哈希值，便于调试
         echo "CONFIG_HASH=$CONFIG_HASH" >> $GITHUB_ENV
         echo "DIY_HASH=$DIY_HASH" >> $GITHUB_ENV
-        echo "SCRIPTS_HASH=$SCRIPTS_HASH" >> $GITHUB_ENV
+        echo "LEDE_HASH=$LEDE_HASH" >> $GITHUB_ENV
 
         # 检查是否强制编译
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
@@ -150,7 +148,6 @@ jobs:
         fi
 
         # 尝试获取上次发布固件中的配置哈希值
-        # 注意：这里使用正确的 tag 名称
         PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
         
         echo "📊 上次编译总配置哈希: $PREVIOUS_CONFIG_HASH"
@@ -167,13 +164,7 @@ jobs:
             echo "   原因: 配置哈希不一致"
             echo "   本次哈希: $CURRENT_CONFIG_HASH"
             echo "   上次哈希: $PREVIOUS_CONFIG_HASH"
-            # 显示具体哪个文件发生了变化
-            if [ "$CONFIG_HASH" != "$(echo $PREVIOUS_CONFIG_HASH | cut -c1-64)" ]; then
-              echo "   📄 源配置文件 ($CONFIG_FILE) 已更改"
-            fi
-            if [ "$DIY_HASH" != "$(echo $PREVIOUS_CONFIG_HASH | cut -c65-128)" ]; then
-              echo "   🔧 diy 脚本 ($DIY_SCRIPT) 已更改"
-            fi
+            # 注：不再尝试细分哪个子文件变化，因上次记录中未单独存储
           fi
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
@@ -269,6 +260,7 @@ jobs:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
 
+    # ========== 修改 Release Body 中的哈希信息 ==========
     - name: Upload Firmware To Release
       if: (steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true')
       uses: ncipollo/release-action@v1
@@ -284,7 +276,7 @@ jobs:
           - CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
           - 📄 源配置 (${{ env.CONFIG_FILE }}) 哈希: ${{ env.CONFIG_HASH }}
           - 🔧 diy 脚本 (${{ env.DIY_SCRIPT }}) 哈希: ${{ env.DIY_HASH }}
-          - 📁 scripts 哈希: ${{ env.SCRIPTS_HASH }}
+          - 📁 lede 源码哈希: ${{ env.LEDE_HASH }}
           - 🚀 成品固件点击此处跳转➦[MINI](https://github.com/fxym1573/OpenWrt/releases/tag/ARMv8_MINI)即可下载
           - 💻 平台架构: ${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }} (精简版临时固件)
           - ⚽ 固件源码: ${{ env.REPO_URL }}
