@@ -191,7 +191,6 @@ jobs:
       if: steps.check-config.outputs.skip_build == 'false'
       run: |
         cd $OPENWRT_PATH
-        sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
