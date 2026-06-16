@@ -109,8 +109,6 @@ jobs:
             echo "   原因: 未找到上次编译记录 (首次编译)"
           else
             echo "   原因: 配置哈希不一致"
-            echo "   本次哈希: $CURRENT_CONFIG_HASH"
-            echo "   上次哈希: $PREVIOUS_CONFIG_HASH"
           fi
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
