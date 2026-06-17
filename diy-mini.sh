@@ -2,7 +2,7 @@
 
 
 # 添加软件源
-# sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
+sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
 
 
 # 修改默认IP
@@ -34,9 +34,9 @@ git_sparse_clone() {
 rm -rf feeds/luci/applications/luci-app-openclash
 # rm -rf feeds/luci/applications/luci-app-dockerman
 
-git_sparse_clone main https://github.com/sirpdboy/luci-app-ddns-go.git package/luci-app-ddns-go
-git_sparse_clone main https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
-git_sparse_clone master https://github.com/vernesong/OpenClash.git package/luci-app-openclash
+#git_sparse_clone main https://github.com/sirpdboy/luci-app-ddns-go.git package/luci-app-ddns-go
+#git_sparse_clone main https://github.com/sirpdboy/luci-app-ddns-go.git package/ddns-go
+#git_sparse_clone master https://github.com/vernesong/OpenClash.git package/luci-app-openclash
 
 # Themes
 git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/luci-theme-edge
