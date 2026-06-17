@@ -45,8 +45,8 @@ git clone --depth=1 -b 18.06 https://github.com/kiddin9/luci-theme-edge package/
 
 # 晶晨宝盒
 git_sparse_clone main https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
-sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/fxym1573/OpenWrt'|g" package/luci-app-amlogic/root/etc/config/amlogic
-sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" package/l
+# sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" package/luci-app-amlogic/root/etc/config/amlogic
+sed -i "s|ARMv8|ARMv8_MINI|g" package/luci-app-amlogic/root/etc/config/amlogic
 
 
 # 修改本地时间格式
