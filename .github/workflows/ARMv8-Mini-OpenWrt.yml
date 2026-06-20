@@ -12,8 +12,8 @@ on:
     - cron: 0 20 * * *
 
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/immortalwrt/immortalwrt   # 修改为 immortalwrt
+  REPO_BRANCH: openwrt-25.12                             # 修改为 openwrt-25.12 分支
   CONFIG_FILE: configs/armv8-mini.config
   DIY_SCRIPT: diy-mini.sh
   CLASH_KERNEL: arm64
@@ -59,19 +59,13 @@ jobs:
         echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
     # ========== 提前检测配置变化（无需克隆 Lede 源码） ==========
-    # 放在 Initialization Environment 之前，以便快速跳过无变化的情况
     - name: Check Config Changes
       id: check-config
       run: |
-        # 计算源配置文件的哈希值
         CONFIG_HASH=$(sha256sum $GITHUB_WORKSPACE/$CONFIG_FILE | awk '{print $1}')
         echo "📄 源配置文件 ($CONFIG_FILE) 哈希: $CONFIG_HASH"
-        
-        # 计算 diy 脚本的哈希
         DIY_HASH=$(sha256sum $GITHUB_WORKSPACE/$DIY_SCRIPT | awk '{print $1}')
         echo "🔧 diy 脚本 ($DIY_SCRIPT) 哈希: $DIY_HASH"
-        
-        # 通过 git ls-remote 获取远程源码的 commit hash（无需克隆）
         LEDE_HASH=$(git ls-remote $REPO_URL $REPO_BRANCH | awk '{print $1}')
         if [ -z "$LEDE_HASH" ]; then
           LEDE_HASH="none"
@@ -79,24 +73,18 @@ jobs:
         else
           echo "📁 远程 lede 源码 Commit Hash: $LEDE_HASH"
         fi
-        
-        # 计算总配置哈希（用于判断是否需要重新编译）
         CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${LEDE_HASH}" | sha256sum | awk '{print $1}')
         echo "🔐 总配置哈希 (基于源配置+diy脚本+远程lede源码): $CURRENT_CONFIG_HASH"
-        
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
 
-        # 检查是否强制编译
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
           echo "⚠️ 强制编译模式：将重新编译固件"
           echo "skip_build=false" >> $GITHUB_OUTPUT
           exit 0
         fi
 
-        # 尝试获取上次发布固件中的总配置哈希值
         PREVIOUS_CONFIG_HASH=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP 'CONFIG_HASH: \K[a-f0-9]+' || echo "none")
-        
         echo "📊 上次编译总配置哈希: $PREVIOUS_CONFIG_HASH"
         echo "📊 本次总配置哈希: $CURRENT_CONFIG_HASH"
         
@@ -113,9 +101,8 @@ jobs:
           echo "skip_build=false" >> $GITHUB_OUTPUT
         fi
 
-    # ========== 以下步骤仅在需要编译时执行 ==========
     - name: Initialization Environment
-      if: steps.check-config.outputs.skip_build == 'false'   # 只在需要编译时执行
+      if: steps.check-config.outputs.skip_build == 'false'
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -166,7 +153,6 @@ jobs:
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
 
-    # ========== 编译相关步骤（已有条件，无需改动） ==========
     - name: Cache Toolchain
       if: steps.check-config.outputs.skip_build == 'false'
       uses: HiGarfield/cachewrtbuild@main
@@ -232,7 +218,6 @@ jobs:
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
-    # ========== 上传编译产物（仅当编译成功时） ==========
     - name: Upload Build Artifacts for Package Job
       if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success'
       uses: actions/upload-artifact@v4
@@ -255,7 +240,6 @@ jobs:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
 
-    # ========== 上传临时固件到 Release（仅编译成功时） ==========
     - name: Upload Firmware To Release
       if: steps.check-config.outputs.skip_build == 'false' && steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
       uses: ncipollo/release-action@v1
@@ -299,8 +283,8 @@ jobs:
       OPENWRT_RELEASE: true
       OPENWRT_TAG: ARMv8_MINI
       TZ: Asia/Shanghai
-      REPO_URL: https://github.com/coolsnowwolf/lede
-      REPO_BRANCH: master
+      REPO_URL: https://github.com/immortalwrt/immortalwrt
+      REPO_BRANCH: openwrt-25.12
 
     steps:
     - name: Checkout
@@ -318,7 +302,6 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
-    # ========== 下载编译产物（可能不存在，若跳过编译则从 Release 获取） ==========
     - name: Download Build Artifacts
       uses: actions/download-artifact@v4
       with:
@@ -336,7 +319,6 @@ jobs:
         echo "跳过编译: $SKIP_BUILD"
         
         cd $FIRMWARE_DIR
-        # 如果 artifact 中没有 tar.gz，尝试从 Release 下载
         if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
           echo "警告: 下载的 artifacts 中没有找到 tar.gz 文件，尝试从 Release 下载..."
           DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
