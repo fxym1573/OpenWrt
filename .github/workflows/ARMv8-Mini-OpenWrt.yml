@@ -58,7 +58,7 @@ jobs:
         echo "--------------------------硬盘信息--------------------------"
         echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
-    # ========== 提前检测配置变化（无需克隆 Lede 源码） ==========
+    # ========== 提前检测配置变化（无需克隆 immortalwrt 源码） ==========
     - name: Check Config Changes
       id: check-config
       run: |
@@ -66,14 +66,14 @@ jobs:
         echo "📄 源配置文件 ($CONFIG_FILE) 哈希: $CONFIG_HASH"
         DIY_HASH=$(sha256sum $GITHUB_WORKSPACE/$DIY_SCRIPT | awk '{print $1}')
         echo "🔧 diy 脚本 ($DIY_SCRIPT) 哈希: $DIY_HASH"
-        LEDE_HASH=$(git ls-remote $REPO_URL $REPO_BRANCH | awk '{print $1}')
-        if [ -z "$LEDE_HASH" ]; then
-          LEDE_HASH="none"
+        immortalwrt_HASH=$(git ls-remote $REPO_URL $REPO_BRANCH | awk '{print $1}')
+        if [ -z "$immortalwrt_HASH" ]; then
+          immortalwrt_HASH="none"
           echo "⚠️ 无法获取远程源码 commit hash"
         else
-          echo "📁 远程 lede 源码 Commit Hash: $LEDE_HASH"
+          echo "📁 远程 immortalwrt 源码 Commit Hash: $LEDE_HASH"
         fi
-        CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${LEDE_HASH}" | sha256sum | awk '{print $1}')
+        CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${immortalwrt_HASH}" | sha256sum | awk '{print $1}')
         echo "🔐 总配置哈希 (基于源配置+diy脚本+远程lede源码): $CURRENT_CONFIG_HASH"
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
