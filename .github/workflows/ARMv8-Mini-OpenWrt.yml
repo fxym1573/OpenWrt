@@ -12,8 +12,8 @@ on:
     - cron: 0 20 * * *
 
 env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt   # 修改为 immortalwrt
-  REPO_BRANCH: openwrt-25.12                             # 修改为 openwrt-25.12 分支
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-25.12
   CONFIG_FILE: configs/armv8-mini.config
   DIY_SCRIPT: diy-mini.sh
   CLASH_KERNEL: arm64
@@ -35,8 +35,8 @@ jobs:
       COMMIT_DATE: ${{ steps.clone.outputs.COMMIT_DATE }}
       COMMIT_MESSAGE: ${{ steps.clone.outputs.COMMIT_MESSAGE }}
       COMMIT_HASH: ${{ steps.clone.outputs.COMMIT_HASH }}
-      DEVICE_TARGET: ${{ steps.variable.outputs.DEVICE_TARGET }}
-      DEVICE_SUBTARGET: ${{ steps.variable.outputs.DEVICE_SUBTARGET }}
+      DEVICE_TARGET: ${{ steps.check-config.outputs.DEVICE_TARGET }}
+      DEVICE_SUBTARGET: ${{ steps.check-config.outputs.DEVICE_SUBTARGET }}
       CURRENT_CONFIG_HASH: ${{ steps.check-config.outputs.CURRENT_CONFIG_HASH }}
 
     steps:
@@ -71,12 +71,20 @@ jobs:
           immortalwrt_HASH="none"
           echo "⚠️ 无法获取远程源码 commit hash"
         else
-          echo "📁 远程 immortalwrt 源码 Commit Hash: $LEDE_HASH"
+          echo "📁 远程 immortalwrt 源码 Commit Hash: $immortalwrt_HASH"
         fi
         CURRENT_CONFIG_HASH=$(echo "${CONFIG_HASH}${DIY_HASH}${immortalwrt_HASH}" | sha256sum | awk '{print $1}')
         echo "🔐 总配置哈希 (基于源配置+diy脚本+远程lede源码): $CURRENT_CONFIG_HASH"
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_ENV
         echo "CURRENT_CONFIG_HASH=$CURRENT_CONFIG_HASH" >> $GITHUB_OUTPUT
+
+        # 提取设备目标（无需克隆源码）
+        DEVICE_TARGET=$(grep -m1 'CONFIG_TARGET_BOARD=' "$GITHUB_WORKSPACE/$CONFIG_FILE" | awk -F '"' '{print $2}')
+        DEVICE_SUBTARGET=$(grep -m1 'CONFIG_TARGET_SUBTARGET=' "$GITHUB_WORKSPACE/$CONFIG_FILE" | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=${DEVICE_TARGET}" >> $GITHUB_OUTPUT
+        echo "DEVICE_SUBTARGET=${DEVICE_SUBTARGET}" >> $GITHUB_OUTPUT
+        echo "DEVICE_TARGET=${DEVICE_TARGET}" >> $GITHUB_ENV
+        echo "DEVICE_SUBTARGET=${DEVICE_SUBTARGET}" >> $GITHUB_ENV
 
         if [ "${{ github.event.inputs.force_rebuild }}" == "true" ]; then
           echo "⚠️ 强制编译模式：将重新编译固件"
@@ -146,12 +154,7 @@ jobs:
         make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_OUTPUT
-        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_OUTPUT
+        # 以下变量已由 check-config 提供，此处仅用于需要 make defconfig 后的其他用途，可省略输出
 
     - name: Cache Toolchain
       if: steps.check-config.outputs.skip_build == 'false'
@@ -310,7 +313,8 @@ jobs:
         sudo -E apt-get -y clean
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Download Build Artifacts
+    - name: Download Build Artifacts (if not skipped)
+      if: env.SKIP_BUILD == 'false'
       uses: actions/download-artifact@v4
       with:
         name: openwrt-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
@@ -321,27 +325,34 @@ jobs:
       id: prepare
       run: |
         FIRMWARE_DIR="openwrt/bin/targets/${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
+        mkdir -p "$FIRMWARE_DIR"
+        cd "$FIRMWARE_DIR"
         
         echo "设备目标: ${DEVICE_TARGET}/${DEVICE_SUBTARGET}"
         echo "固件路径: $FIRMWARE_DIR"
         echo "跳过编译: $SKIP_BUILD"
         
-        cd $FIRMWARE_DIR
-        if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
-          echo "警告: 下载的 artifacts 中没有找到 tar.gz 文件，尝试从 Release 下载..."
+        # 如果跳过编译或本地没有 tar.gz，则从 Release 下载
+        if [ "$SKIP_BUILD" = "true" ] || [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
+          echo "尝试从 Release 下载固件..."
           DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/2-$FIRMWARE_TAG" | grep -oP '"browser_download_url": "\K[^"]+rootfs.tar.gz(?=")' | head -1)
           if [ -n "$DOWNLOAD_URL" ]; then
             echo "下载固件: $DOWNLOAD_URL"
             wget -q --show-progress "$DOWNLOAD_URL"
           else
-            echo "错误: 无法找到固件文件，请确保已经成功编译过至少一次。"
+            echo "错误: 无法从 Release 获取固件，且本地无固件。请确保首次编译成功或手动上传 Release。"
             exit 1
           fi
         fi
         
+        # 确认固件存在
+        if [ -z "$(ls *.tar.gz 2>/dev/null)" ]; then
+          echo "错误: 固件文件不存在！"
+          exit 1
+        fi
+        
         echo "固件准备完成:"
         ls -la *.tar.gz
-        
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "DATE1=$(date +"%y.%m.%d")" >> $GITHUB_ENV
